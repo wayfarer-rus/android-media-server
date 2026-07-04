@@ -1,0 +1,41 @@
+#!/data/data/com.termux/files/usr/bin/sh
+set -u
+
+export HOME="${HOME:-/data/data/com.termux/files/home}"
+export PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+export PATH="$HOME/bin:$PREFIX/bin:$PATH"
+export DOTNET_ROOT="$PREFIX/lib/dotnet"
+export DOTNET_BUNDLE_EXTRACT_BASE_DIR="$HOME/.cache/dotnet_bundle_extract"
+
+USB_READY="${USB_READY:-$HOME/bin/usb-media-ready}"
+JELLYFIN_DATA_DIR="${JELLYFIN_DATA_DIR:-$HOME/.local/share/jellyfin}"
+JELLYFIN_CONFIG_DIR="${JELLYFIN_CONFIG_DIR:-$HOME/.config/jellyfin}"
+JELLYFIN_CACHE_DIR="${JELLYFIN_CACHE_DIR:-$HOME/.cache/jellyfin}"
+JELLYFIN_LOG_DIR="${JELLYFIN_LOG_DIR:-$HOME/.local/share/jellyfin/log}"
+JELLYFIN_WEB_DIR="${JELLYFIN_WEB_DIR:-$PREFIX/lib/jellyfin/jellyfin-web}"
+JELLYFIN_FFMPEG="${JELLYFIN_FFMPEG:-$HOME/bin/jellyfin-ffmpeg-compat-wrapper}"
+[ -x "$JELLYFIN_FFMPEG" ] || JELLYFIN_FFMPEG="$PREFIX/bin/ffmpeg"
+
+fail_retry() {
+  printf '%s jellyfin: preflight_failed reason=%s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$1"
+  sleep 30
+  exit 111
+}
+
+[ -x "$PREFIX/bin/jellyfin" ] || fail_retry "jellyfin_binary_missing"
+[ -x "$JELLYFIN_FFMPEG" ] || fail_retry "ffmpeg_missing"
+[ -d "$JELLYFIN_WEB_DIR" ] || fail_retry "jellyfin_web_missing"
+"$USB_READY" --quiet || fail_retry "usb_not_ready"
+
+mkdir -p "$JELLYFIN_DATA_DIR" "$JELLYFIN_CONFIG_DIR" "$JELLYFIN_CACHE_DIR" \
+  "$JELLYFIN_LOG_DIR" "$DOTNET_BUNDLE_EXTRACT_BASE_DIR"
+
+exec "$PREFIX/bin/jellyfin" \
+  --service \
+  --datadir "$JELLYFIN_DATA_DIR" \
+  --configdir "$JELLYFIN_CONFIG_DIR" \
+  --cachedir "$JELLYFIN_CACHE_DIR" \
+  --logdir "$JELLYFIN_LOG_DIR" \
+  --webdir "$JELLYFIN_WEB_DIR" \
+  --ffmpeg "$JELLYFIN_FFMPEG" \
+  2>&1

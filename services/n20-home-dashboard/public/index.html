@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>N20 Home</title>
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/header.css">
+<link rel="stylesheet" href="css/grid.css">
+<link rel="stylesheet" href="css/storage.css">
+<link rel="stylesheet" href="css/cpu.css">
+<link rel="stylesheet" href="css/memory.css">
+<link rel="stylesheet" href="css/network.css">
+<link rel="stylesheet" href="css/services.css">
+<link rel="stylesheet" href="css/activity.css">
+<link rel="stylesheet" href="css/responsive.css">
+</head>
+<body>
+<div id="app">
+  <header id="top-header">
+    <div class="header-left">
+      <div class="logo-mark" aria-hidden="true">⌂</div>
+      <div>
+        <div class="logo">N20 Home</div>
+        <div class="subtitle">Note 20 NAS</div>
+      </div>
+    </div>
+    <div class="header-center">
+      <h1 id="greeting">Loading...</h1>
+      <p>Your Note 20 NAS is running smoothly.</p>
+    </div>
+    <div class="header-right">
+      <span id="badge" class="badge">-</span>
+      <span class="refresh-control" title="Auto-refresh active"><span id="refresh-indicator" class="refresh-dot"></span> Auto refresh<br><b>12s</b></span>
+    </div>
+  </header>
+  <section id="status-strip">
+    <article class="strip-item" title="Uptime">
+      <span class="strip-icon">◷</span>
+      <span><span class="strip-label">Uptime</span><b id="strip-uptime">&#8212;</b><small id="strip-since">Since start</small></span>
+    </article>
+    <article class="strip-item" title="Supervisor health">
+      <span id="strip-supervisor-icon" class="strip-icon">◇</span>
+      <span><span class="strip-label">Supervisor</span><b id="strip-supervisor">&#8212;</b><small id="strip-supervisor-meta">&#8212;</small></span>
+    </article>
+    <article class="strip-item">
+      <span class="strip-icon">▯</span>
+      <span><span class="strip-label">Device</span><b id="strip-model">&#8212;</b><small id="strip-android">&#8212;</small></span>
+    </article>
+    <article class="strip-item" title="Battery">
+      <span class="strip-icon">▣</span>
+      <span><span class="strip-label">Battery</span><b id="strip-battery">&#8212;</b><small id="strip-battery-state">&#8212;</small></span>
+    </article>
+    <article class="strip-item" title="Wi-Fi">
+      <span class="strip-icon">≋</span>
+      <span><span class="strip-label">Wi-Fi</span><b id="strip-wifi">&#8212;</b><small id="strip-wifi-meta">&#8212;</small></span>
+    </article>
+    <article class="strip-item">
+      <span class="strip-icon">⌘</span>
+      <span><span class="strip-label">Local IP</span><b id="strip-ip">&#8212;</b><small>LAN</small></span>
+    </article>
+    <article id="strip-temp-card" class="strip-item" title="Battery Temperature">
+      <span class="strip-icon strip-hot">♨</span>
+      <span><span class="strip-label">Temperature</span><b id="strip-temp">&#8212;</b><small id="strip-temp-state">Normal</small></span>
+    </article>
+  </section>
+  <main id="dashboard-grid">
+    <section id="card-storage" class="card">
+      <div class="card-head">
+        <div>
+          <div class="card-title">USB Storage <span>(Main)</span></div>
+          <div class="card-path">/mnt/media_rw</div>
+        </div>
+      </div>
+      <div id="usb-state" class="usb-state">Checking...</div>
+      <div id="usb-body" class="usb-body" style="display:none">
+        <div class="storage-ring-row">
+          <div class="ring-container">
+            <svg class="ring" viewBox="0 0 120 120">
+              <circle class="ring-bg" cx="60" cy="60" r="52" fill="none" stroke="var(--border)" stroke-width="10"/>
+              <circle class="ring-fill" cx="60" cy="60" r="52" fill="none" stroke-width="10" stroke-linecap="round"/>
+            </svg>
+            <div class="ring-label"><span><span id="usb-pct">&#8212;</span>%</span><small>Used</small></div>
+          </div>
+          <div class="storage-details">
+            <div id="usb-used-line" class="detail-line">Used: &#8212;</div>
+            <div id="usb-free-line" class="detail-line">Free: &#8212;</div>
+            <div id="usb-total-line" class="detail-line">Total: &#8212;</div>
+          </div>
+        </div>
+        <div id="top-folders" class="top-folders" style="display:none">
+          <div class="section-subtitle">Top folders</div>
+          <ul id="folder-list"></ul>
+        </div>
+      </div>
+      <div id="internal-storage" class="internal-storage">
+        <div class="section-subtitle">Internal Storage</div>
+        <div class="progress-row">
+          <div class="progress-track"><div id="internal-bar" class="progress-fill" style="width:0%"></div></div>
+          <span id="internal-pct" class="progress-label">&#8212;%</span>
+        </div>
+      </div>
+    </section>
+    <section id="card-cpu" class="card">
+      <div class="card-head">
+        <div class="card-title">CPU</div>
+      </div>
+      <div class="loadavg-row">
+        <span class="load-label">Load avg</span>
+        <span id="load-1" class="load-val">&#8212;</span>
+        <span class="load-label">/</span>
+        <span id="load-5" class="load-val">&#8212;</span>
+        <span class="load-label">/</span>
+        <span id="load-15" class="load-val">&#8212;</span>
+      </div>
+      <div id="cores-grid" class="cores-grid"></div>
+      <div class="card-hint">Frequency only &#8212; utilization not available without root</div>
+    </section>
+    <section id="card-memory" class="card">
+      <div class="card-head">
+        <div class="card-title">Memory</div>
+      </div>
+      <div class="mem-section">
+        <div class="mem-label">RAM</div>
+        <div class="progress-row">
+          <div class="progress-track"><div id="ram-bar" class="progress-fill ram-fill" style="width:0%"></div></div>
+          <span id="ram-pct" class="progress-label">&#8212;%</span>
+        </div>
+        <div class="mem-values">
+          <span id="ram-used">Used: &#8212;</span>
+          <span id="ram-available">Available: &#8212;</span>
+          <span id="ram-cache">Cache: &#8212;</span>
+        </div>
+      </div>
+      <div class="mem-section">
+        <div class="mem-label">Swap</div>
+        <div class="progress-row">
+          <div class="progress-track"><div id="swap-bar" class="progress-fill swap-fill" style="width:0%"></div></div>
+          <span id="swap-pct" class="progress-label">&#8212;%</span>
+        </div>
+        <div class="mem-values">
+          <span id="swap-used">Used: &#8212;</span>
+          <span id="swap-free">Free: &#8212;</span>
+        </div>
+      </div>
+    </section>
+    <section id="card-network" class="card">
+      <div class="card-title">Network</div>
+      <div id="net-ssid" class="net-row" style="display:none"><span class="net-label">SSID</span><span id="net-ssid-val" class="net-val"></span></div>
+      <div class="net-row"><span class="net-label">Signal</span><span id="net-rssi" class="net-val">&#8212;</span></div>
+      <div class="net-row"><span class="net-label">Link speed</span><span id="net-speed" class="net-val">&#8212;</span></div>
+      <div class="net-row"><span class="net-label">Frequency</span><span id="net-freq" class="net-val">&#8212;</span></div>
+      <div class="net-row"><span class="net-label">LAN IP</span><span id="net-ip" class="net-val">&#8212;</span></div>
+      <div class="card-hint">Throughput not available without root</div>
+    </section>
+    <section id="card-services" class="card card-wide">
+      <div class="card-title">Services</div>
+      <div id="services-grid" class="services-grid"></div>
+    </section>
+    <section id="card-activity" class="card card-wide">
+      <div class="card-head">
+        <div class="card-title">Activity Feed</div>
+      </div>
+      <div id="activity-list" class="activity-list">Loading...</div>
+    </section>
+  </main>
+  <dialog id="service-dialog" class="service-dialog">
+    <form method="dialog" class="service-dialog-panel">
+      <div class="service-dialog-head">
+        <div>
+          <div id="service-dialog-title" class="service-dialog-title">Service setup</div>
+          <div id="service-dialog-subtitle" class="service-dialog-subtitle"></div>
+        </div>
+        <button type="submit" class="dialog-close" aria-label="Close">×</button>
+      </div>
+      <div id="service-dialog-body" class="service-dialog-body"></div>
+    </form>
+  </dialog>
+  <footer>N20 Home Dashboard <span>•</span> Note 20 NAS <span>•</span> Made with care on Termux</footer>
+</div>
+<script src="js/utils.js"></script>
+<script src="js/render.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

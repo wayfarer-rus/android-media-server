@@ -1,0 +1,34 @@
+@media(max-width:768px){
+  #app{padding:12px 12px 30px}
+  #top-header{grid-template-columns:1fr;align-items:flex-start;gap:12px}
+  .header-left{border-right:0;padding-right:0}
+  .header-center{display:block}
+  .header-center h1{font-size:20px}
+  .header-center p{margin-top:2px}
+  .header-right{width:100%;justify-content:space-between}
+  #status-strip{grid-template-columns:1fr}
+  .strip-item{min-height:78px;border-right:0;border-bottom:1px solid var(--border)}
+  .strip-item:last-child{border-bottom:0}
+  #dashboard-grid{grid-template-columns:1fr;grid-template-areas:"storage" "cpu" "memory" "network" "services" "activity"}
+  .card-wide{grid-column:auto}
+  .cores-grid{grid-template-columns:1fr}
+  .core-item{grid-template-columns:44px 1fr 44px}
+  .usb-body{grid-template-columns:1fr}
+  .services-grid{grid-template-columns:1fr}
+  .storage-ring-row{grid-template-columns:1fr;align-items:flex-start}
+  .top-folders{grid-column:1}
+  .ring-container{width:72px;height:72px}
+  .ring-label{font-size:13px}
+  .internal-storage{border-left:0;padding-left:0}
+  #card-network{grid-template-columns:1fr}
+  #card-network .card-title{grid-row:auto}
+  .mem-values{grid-template-columns:1fr}
+}
+@media(min-width:769px) and (max-width:1180px){
+  #status-strip{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .strip-item:nth-child(3n){border-right:0}
+  #dashboard-grid{grid-template-columns:repeat(6,minmax(0,1fr));grid-template-areas:"storage storage storage storage storage storage" "cpu cpu cpu memory memory memory" "network network network network network network" "services services services services services services" "activity activity activity activity activity activity"}
+  .services-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+  #card-network{grid-template-columns:repeat(2,minmax(0,1fr))}
+  #card-network .card-title{grid-column:1/-1;grid-row:auto}
+}

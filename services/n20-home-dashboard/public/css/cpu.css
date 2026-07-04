@@ -1,0 +1,13 @@
+.loadavg-row{display:flex;align-items:baseline;gap:10px;margin-bottom:16px;padding:10px 12px;border:1px solid var(--border);border-radius:7px;background:rgba(255,255,255,.018);font-size:14px}
+.load-label{color:var(--dim)}
+.load-val{color:var(--text);font-weight:500;font-size:21px}
+.cores-grid{display:grid;grid-template-columns:1fr;gap:8px}
+.core-item{display:grid;grid-template-columns:28px 70px 1fr;align-items:center;gap:10px}
+.core-header{display:contents;font-size:13px;color:var(--dim)}
+.core-header .core-id{font-weight:600}
+.core-header .core-freq{color:var(--text);text-align:right}
+.core-bar-track{height:7px;background:rgba(124,149,171,.16);border-radius:4px;overflow:hidden}
+.core-bar-fill{height:100%;border-radius:2px;transition:width .3s ease}
+.core-big .core-bar-fill{background:linear-gradient(90deg,var(--blue),#3f7cff)}
+.core-little .core-bar-fill{background:linear-gradient(90deg,var(--green),#56c96b)}
+#card-cpu .card-hint{padding-top:12px;border-top:1px solid var(--border)}

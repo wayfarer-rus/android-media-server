@@ -1,0 +1,11 @@
+#!/data/data/com.termux/files/usr/bin/sh
+set -u
+
+export HOME="${HOME:-/data/data/com.termux/files/home}"
+export PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+export PATH="$HOME/bin:$PREFIX/bin:$PATH"
+
+while true; do
+  "$HOME/bin/gateway-services-check" 2>&1
+  sleep 10
+done

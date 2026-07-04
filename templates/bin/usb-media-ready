@@ -1,0 +1,29 @@
+#!/data/data/com.termux/files/usr/bin/sh
+set -u
+
+# Replace this with the real mount path shown by:
+#   grep -E 'media_rw.*(sdfat|exfat)' /proc/mounts
+USB_ROOT="${USB_ROOT:-/mnt/media_rw/<usb-volume-id>}"
+
+quiet=0
+[ "${1:-}" = "--quiet" ] && quiet=1
+
+fail() {
+  [ "$quiet" = 1 ] || printf 'usb_media=missing reason="%s" path="%s"\n' "$1" "$USB_ROOT"
+  exit 1
+}
+
+line=$(grep " $USB_ROOT " /proc/mounts 2>/dev/null || true)
+[ -n "$line" ] || fail "mount_not_present"
+
+case "$line" in
+  *" sdfat "*|*" exfat "*) ;;
+  *) fail "not_exfat_or_sdfat" ;;
+esac
+
+[ -d "$USB_ROOT" ] || fail "path_missing"
+[ -r "$USB_ROOT" ] || fail "path_not_readable"
+ls "$USB_ROOT" >/dev/null 2>&1 || fail "path_not_listable"
+
+[ "$quiet" = 1 ] || printf 'usb_media=ok path="%s"\n' "$USB_ROOT"
+exit 0

@@ -1,0 +1,5 @@
+#!/data/data/com.termux/files/usr/bin/sh
+export PREFIX=/data/data/com.termux/files/usr
+logdir="$PREFIX/var/log/sv/n20-home-dashboard"
+mkdir -p "$logdir"
+exec "$PREFIX/bin/svlogd" -tt "$logdir"

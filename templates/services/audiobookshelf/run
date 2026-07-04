@@ -1,0 +1,58 @@
+#!/data/data/com.termux/files/usr/bin/sh
+set -u
+
+export HOME="${HOME:-/data/data/com.termux/files/home}"
+export PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+export PATH="$HOME/bin:$PREFIX/bin:$PATH"
+
+APP="${APP:-$HOME/apps/audiobookshelf/current}"
+NODE="${NODE:-$HOME/apps/audiobookshelf/nodejs-lts-24.14.1/data/data/com.termux/files/usr/bin/node}"
+AUDIOBOOKS="${AUDIOBOOKS:-/mnt/media_rw/<usb-volume-id>/Audiobooks}"
+HOST_ADDR="${HOST_ADDR:-192.168.1.50}"
+PORT="${PORT:-13378}"
+CONFIG_PATH="${CONFIG_PATH:-$HOME/.config/audiobookshelf}"
+METADATA_PATH="${METADATA_PATH:-$HOME/.local/share/audiobookshelf}"
+STATE_PATH="${STATE_PATH:-$HOME/.local/state/audiobookshelf}"
+CACHE_PATH="${CACHE_PATH:-$HOME/.cache/audiobookshelf}"
+FFMPEG_PATH="${FFMPEG_PATH:-$PREFIX/bin/ffmpeg}"
+FFPROBE_PATH="${FFPROBE_PATH:-$PREFIX/bin/ffprobe}"
+
+fail_retry() {
+  printf '%s audiobookshelf: preflight_failed reason=%s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$1"
+  sleep 30
+  exit 111
+}
+
+mkdir -p "$CONFIG_PATH" "$METADATA_PATH" "$STATE_PATH" "$CACHE_PATH" "$METADATA_PATH/tmp"
+
+[ -x "$NODE" ] || fail_retry "node_missing"
+[ -d "$APP" ] || fail_retry "app_missing"
+[ -r "$APP/index.js" ] || fail_retry "index_missing"
+[ -r "$APP/client/dist/index.html" ] || fail_retry "client_dist_missing"
+[ -x "$FFMPEG_PATH" ] || fail_retry "ffmpeg_missing"
+[ -x "$FFPROBE_PATH" ] || fail_retry "ffprobe_missing"
+[ -d "$AUDIOBOOKS" ] || fail_retry "audiobook_root_missing"
+[ -r "$AUDIOBOOKS" ] || fail_retry "audiobook_root_not_readable"
+ls "$AUDIOBOOKS" >/dev/null 2>&1 || fail_retry "audiobook_root_not_listable"
+
+cd "$APP" || fail_retry "app_cd_failed"
+
+if ! "$NODE" -e 'require("sqlite3")' >/dev/null 2>&1; then
+  fail_retry "native_modules_not_loadable"
+fi
+
+export HOST="$HOST_ADDR"
+export PORT
+export CONFIG_PATH
+export METADATA_PATH
+export BACKUP_PATH="$METADATA_PATH/backups"
+export FFMPEG_PATH
+export FFPROBE_PATH
+export SKIP_BINARIES_CHECK=1
+export SOURCE=local
+export ROUTER_BASE_PATH=/audiobookshelf
+export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=768}"
+export TMPDIR="$METADATA_PATH/tmp"
+
+exec "$NODE" index.js --host "$HOST_ADDR" --port "$PORT" \
+  --config "$CONFIG_PATH" --metadata "$METADATA_PATH" --source local

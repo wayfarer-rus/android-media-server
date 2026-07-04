@@ -1,0 +1,504 @@
+#!/data/data/com.termux/files/usr/bin/python3
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import signal
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HOME = Path(os.environ.get("HOME", "/data/data/com.termux/files/home"))
+PREFIX = Path(os.environ.get("PREFIX", "/data/data/com.termux/files/usr"))
+SVDIR = PREFIX / "var/service"
+STATE_DIR = HOME / ".local/state/runit-supervisor-watchdog"
+STATUS_FILE = STATE_DIR / "status.json"
+LOG_FILE = STATE_DIR / "watchdog.log"
+LAST_RECOVERY_FILE = STATE_DIR / "last_recovery.json"
+LOCK_DIR = STATE_DIR / "recovery.lock"
+LAN_IP = os.environ.get("ANDROID_MEDIA_LAN_IP", "192.168.1.50")
+
+os.environ.setdefault("HOME", str(HOME))
+os.environ.setdefault("PREFIX", str(PREFIX))
+os.environ.setdefault("SVDIR", str(SVDIR))
+os.environ["PATH"] = f"{HOME}/bin:{PREFIX}/bin:" + os.environ.get("PATH", "")
+
+CRITICAL = {
+    "smbd-android": {
+        "port": 1445,
+        "patterns": [
+            f"smbd --foreground --configfile={HOME}/samba/smb-media-drive.conf",
+        ],
+    },
+    "navidrome": {
+        "port": 4533,
+        "patterns": [
+            f"navidrome --configfile {HOME}/.config/navidrome/navidrome.toml",
+            f"/bin/navidrome --configfile {HOME}/.config/navidrome/navidrome.toml",
+        ],
+    },
+    "jellyfin": {
+        "port": 8096,
+        "patterns": [
+            f"jellyfin --service --datadir {HOME}/.local/share/jellyfin",
+        ],
+    },
+    "n20-home-dashboard": {
+        "port": 8080,
+        "patterns": [
+            "n20-home-dashboard/server/n20-dashboard-server.py",
+        ],
+    },
+    "filebrowser-quantum": {
+        "port": 8088,
+        "patterns": [
+            f"filebrowser-quantum -c {HOME}/.config/filebrowser-quantum/config.yaml",
+        ],
+    },
+    "audiobookshelf": {
+        "port": 13378,
+        "patterns": [
+            r"node .*index\.js --host .* --port 13378",
+            r"node .*index\.js --port 13378",
+        ],
+    },
+}
+
+
+def utc_now():
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def shq(value):
+    return "'" + str(value).replace("'", "'\\''") + "'"
+
+
+def run(cmd, timeout=8):
+    try:
+        return subprocess.run(cmd, shell=True, text=True, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        return subprocess.CompletedProcess(cmd, 124, exc.stdout or "", exc.stderr or "timeout")
+    except Exception as exc:
+        return subprocess.CompletedProcess(cmd, 1, "", str(exc))
+
+
+def log(message):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with LOG_FILE.open("a", encoding="utf-8") as handle:
+        handle.write(f"{utc_now()} {message}\n")
+
+
+def pgrep(pattern):
+    result = run(f"pgrep -af {shq(pattern)}", timeout=4)
+    rows = []
+    for line in result.stdout.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        try:
+            rows.append((int(parts[0]), parts[1]))
+        except ValueError:
+            pass
+    return rows
+
+
+def runsvdir_pids():
+    pattern = f"^({PREFIX}/bin/)?runsvdir {SVDIR}$"
+    return [pid for pid, _cmd in pgrep(pattern)]
+
+
+def pid_ppid(pid):
+    try:
+        with open(f"/proc/{pid}/status", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("PPid:"):
+                    return int(line.split()[1])
+    except Exception:
+        return None
+    return None
+
+
+def runsv_processes():
+    result = []
+    for pid, cmd in pgrep("^runsv "):
+        service = cmd.split(None, 1)[1] if " " in cmd else cmd
+        result.append({"pid": pid, "ppid": pid_ppid(pid), "service": service})
+    return result
+
+
+def orphan_runsv_processes(runsvdirs=None):
+    parents = set(runsvdirs if runsvdirs is not None else runsvdir_pids())
+    return [proc for proc in runsv_processes() if proc["ppid"] not in parents]
+
+
+def summarize_sv(output):
+    if not output:
+        return "unknown"
+    if "runsv not running" in output:
+        return "runsv not running"
+    if output.startswith("run:"):
+        return "run"
+    if output.startswith("down:"):
+        return "down"
+    return output[:80]
+
+
+def sv_status(name):
+    result = run(f"sv status {shq(SVDIR / name)} 2>&1", timeout=4)
+    output = (result.stdout + result.stderr).strip().replace("\n", " ")
+    if output.startswith("run:"):
+        state = "up"
+    elif output.startswith("down:"):
+        state = "down"
+    elif "runsv not running" in output:
+        state = "unsupervised"
+    else:
+        state = "unknown"
+    match = re.search(r"\(pid (\d+)\)", output)
+    pid = int(match.group(1)) if match else None
+    return {"state": state, "summary": summarize_sv(output), "supervisor_pid": pid}
+
+
+def usb_ready():
+    checker = HOME / "bin/usb-media-ready"
+    result = run(f"{shq(checker)} --quiet", timeout=8)
+    detail = run(f"{shq(checker)} 2>&1", timeout=8).stdout.strip().replace("\n", " ")
+    return result.returncode == 0, detail
+
+
+def port_open(port):
+    try:
+        with socket.create_connection((LAN_IP, port), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
+def matching_pids(patterns):
+    rows = []
+    for pattern in patterns:
+        rows.extend(pgrep(pattern))
+    seen = set()
+    result = []
+    own_pid = os.getpid()
+    for pid, cmd in rows:
+        if pid == own_pid or pid in seen:
+            continue
+        seen.add(pid)
+        result.append((pid, cmd))
+    return result
+
+
+def stale_matching_pids(patterns, supervised=None):
+    rows = []
+    for pid, cmd in matching_pids(patterns):
+        if supervised is not None and pid == supervised:
+            continue
+        if pid_ppid(pid) == 1:
+            rows.append((pid, cmd))
+    return rows
+
+
+def terminate_pid(pid, label, dry_run=False):
+    if dry_run:
+        log(f"dry_run terminate {label} pid={pid}")
+        return True
+    try:
+        os.kill(pid, signal.SIGTERM)
+        log(f"terminated {label} pid={pid}")
+        return True
+    except OSError as exc:
+        log(f"terminate_failed {label} pid={pid} error={exc}")
+        return False
+
+
+def terminate_supervisors(sig=signal.SIGTERM, dry_run=False):
+    actions = []
+    pattern = f"^({PREFIX}/bin/)?runsvdir {SVDIR}$"
+    rows = [(pid, "runsvdir", cmd) for pid, cmd in pgrep(pattern)]
+    rows.extend((pid, "runsv", cmd) for pid, cmd in pgrep("^runsv "))
+    for pid, kind, _cmd in rows:
+        if dry_run:
+            log(f"dry_run terminate supervisor kind={kind} pid={pid}")
+            actions.append({"kind": kind, "pid": pid})
+            continue
+        try:
+            os.kill(pid, sig)
+            log(f"terminated supervisor kind={kind} pid={pid} signal={sig}")
+            actions.append({"kind": kind, "pid": pid})
+        except OSError as exc:
+            log(f"terminate_supervisor_failed kind={kind} pid={pid} error={exc}")
+    return actions
+
+
+def terminate_matching_services(dry_run=False):
+    actions = []
+    for name, svc in CRITICAL.items():
+        for pid, _cmd in matching_pids(svc["patterns"]):
+            if terminate_pid(pid, f"service={name}", dry_run=dry_run):
+                actions.append({"service": name, "pid": pid})
+    return actions
+
+
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def acquire_lock(max_age=300):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    try:
+        LOCK_DIR.mkdir()
+        (LOCK_DIR / "pid").write_text(str(os.getpid()) + "\n", encoding="utf-8")
+        (LOCK_DIR / "time").write_text(str(int(now)) + "\n", encoding="utf-8")
+        return True
+    except FileExistsError:
+        try:
+            pid = int((LOCK_DIR / "pid").read_text(encoding="utf-8").strip())
+        except Exception:
+            pid = None
+        try:
+            created = int((LOCK_DIR / "time").read_text(encoding="utf-8").strip())
+        except Exception:
+            created = 0
+        if pid and pid_alive(pid) and now - created < max_age:
+            log(f"recovery_lock_busy pid={pid}")
+            return False
+        try:
+            for child in LOCK_DIR.iterdir():
+                child.unlink()
+            LOCK_DIR.rmdir()
+        except Exception as exc:
+            log(f"recovery_lock_remove_failed error={exc}")
+            return False
+        return acquire_lock(max_age=max_age)
+
+
+def release_lock():
+    try:
+        for child in LOCK_DIR.iterdir():
+            child.unlink()
+        LOCK_DIR.rmdir()
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        log(f"recovery_lock_release_failed error={exc}")
+
+
+def kill_verified_orphan(name, svc, dry_run):
+    status = sv_status(name)
+    if not port_open(svc["port"]):
+        return None
+    supervised = status.get("supervisor_pid")
+    matches = matching_pids(svc["patterns"])
+    orphans = stale_matching_pids(svc["patterns"], supervised=supervised)
+    supervised_match = any(pid == supervised for pid, _cmd in matches)
+    if not orphans and status["state"] == "up" and supervised_match:
+        return None
+    actions = []
+    for pid, _cmd in orphans:
+        label = f"orphan_blocking_port service={name} port={svc['port']} pid={pid} supervised_pid={supervised}"
+        if dry_run:
+            log("dry_run " + label)
+            actions.append({"service": name, "pid": pid, "action": "would_kill"})
+        elif terminate_pid(pid, label):
+            actions.append({"service": name, "pid": pid, "action": "killed"})
+        else:
+            actions.append({"service": name, "pid": pid, "action": "kill_failed"})
+    return actions or None
+
+
+def collect():
+    runsvdirs = runsvdir_pids()
+    orphan_runsv = orphan_runsv_processes(runsvdirs)
+    usb_ok, usb_detail = usb_ready()
+    services = {}
+    for name, svc in CRITICAL.items():
+        status = sv_status(name)
+        status["port_open"] = port_open(svc["port"])
+        matches = matching_pids(svc["patterns"])
+        status["main_process_supervised"] = any(
+            pid == status.get("supervisor_pid") for pid, _cmd in matches
+        )
+        stale = stale_matching_pids(svc["patterns"], supervised=status.get("supervisor_pid"))
+        status["stale_process_count"] = len(stale)
+        if (
+            status["port_open"]
+            and status["state"] == "up"
+            and (not status["main_process_supervised"] or stale)
+        ):
+            status["state"] = "orphaned"
+            status["summary"] = "port held outside supervised main process"
+        services[name] = status
+    return {
+        "runsvdir_count": len(runsvdirs),
+        "runsvdir_pids": runsvdirs,
+        "orphan_runsv_count": len(orphan_runsv),
+        "orphan_runsv": orphan_runsv,
+        "usb_ready": usb_ok,
+        "usb": usb_detail,
+        "services": services,
+    }
+
+
+def load_last_recovery():
+    try:
+        return json.loads(LAST_RECOVERY_FILE.read_text(encoding="utf-8")).get("time")
+    except Exception:
+        return None
+
+
+def write_status(state, reason, checks, action="none", dry_run=False):
+    doc = {
+        "schema": 1,
+        "state": state,
+        "reason": reason,
+        "last_check": utc_now(),
+        "last_recovery": load_last_recovery(),
+        "action": action,
+        "dry_run": dry_run,
+        "runsvdir_count": checks["runsvdir_count"],
+        "orphan_runsv_count": checks.get("orphan_runsv_count", 0),
+        "usb_ready": checks["usb_ready"],
+        "services": checks["services"],
+    }
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = STATUS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(STATUS_FILE)
+    return doc
+
+
+def recover(dry_run=False):
+    before = collect()
+    if before["runsvdir_count"] == 0:
+        reason = "runsvdir_missing"
+    elif before["runsvdir_count"] != 1:
+        reason = "runsvdir_count_not_one"
+    else:
+        reason = "orphan_runsv"
+    write_status("recovering", reason, before, action="starting_service_daemon", dry_run=dry_run)
+    log(
+        "recovery_start "
+        f"reason={reason} dry_run={int(dry_run)} "
+        f"runsvdir_count={before['runsvdir_count']} "
+        f"orphan_runsv_count={before.get('orphan_runsv_count', 0)}"
+    )
+    if not dry_run:
+        run("service-daemon stop", timeout=20)
+        time.sleep(2)
+        terminate_supervisors(signal.SIGTERM, dry_run=False)
+        time.sleep(2)
+        if runsvdir_pids() or runsv_processes():
+            terminate_supervisors(signal.SIGKILL, dry_run=False)
+            time.sleep(1)
+        terminate_matching_services(dry_run=False)
+        time.sleep(2)
+        run(f"rm -f {shq(PREFIX / 'var/run/service-daemon.pid')}", timeout=4)
+        run("service-daemon start", timeout=10)
+    time.sleep(4)
+    mid = collect()
+    if mid["usb_ready"]:
+        if not dry_run:
+            run(str(HOME / "bin/gateway-services-check"), timeout=25)
+        action = "service_daemon_started_gateway_checked"
+    else:
+        action = "service_daemon_started_gateway_skipped_usb_not_ready"
+        log("gateway_skip reason=usb_not_ready")
+    if not dry_run:
+        for name, svc in CRITICAL.items():
+            kill_verified_orphan(name, svc, dry_run=False)
+        time.sleep(4)
+    after = collect()
+    state, final_reason = classify(after)
+    if state == "healthy" and not dry_run:
+        LAST_RECOVERY_FILE.write_text(
+            json.dumps({"time": utc_now(), "reason": reason}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    log(f"recovery_end state={state} reason={final_reason} action={action}")
+    return write_status(state, final_reason, after, action=action, dry_run=dry_run)
+
+
+def classify(checks):
+    if checks["runsvdir_count"] != 1:
+        return "degraded", "runsvdir_count_not_one"
+    if checks.get("orphan_runsv_count", 0) != 0:
+        return "degraded", "orphan_runsv"
+    bad = []
+    for name, status in checks["services"].items():
+        if status["state"] != "up":
+            bad.append(f"{name}:{status['state']}")
+    if bad:
+        return "degraded", ",".join(bad)
+    return "healthy", "ok"
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Android media server runit supervisor watchdog")
+    parser.add_argument("--status", action="store_true", help="write current status and exit")
+    parser.add_argument("--dry-run", action="store_true", help="show status without recovery actions")
+    args = parser.parse_args()
+
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    checks = collect()
+    state, reason = classify(checks)
+
+    if args.status or args.dry_run:
+        doc = write_status(state, reason, checks, action="status_only", dry_run=args.dry_run)
+        print(json.dumps(doc, ensure_ascii=False, indent=2))
+        return 0 if state == "healthy" else 1
+
+    if checks["runsvdir_count"] != 1 or checks.get("orphan_runsv_count", 0) != 0:
+        if not acquire_lock():
+            doc = write_status(
+                "recovering",
+                "recovery_already_running",
+                checks,
+                action="lock_busy",
+                dry_run=False,
+            )
+            print(json.dumps(doc, ensure_ascii=False))
+            return 1
+        try:
+            doc = recover(dry_run=False)
+        finally:
+            release_lock()
+        print(json.dumps(doc, ensure_ascii=False))
+        return 0 if doc["state"] == "healthy" else 1
+
+    orphan_actions = []
+    for name, svc in CRITICAL.items():
+        if checks["services"].get(name, {}).get("state") == "orphaned":
+            action = kill_verified_orphan(name, svc, dry_run=False)
+            if action:
+                orphan_actions.extend(action if isinstance(action, list) else [action])
+
+    if orphan_actions:
+        time.sleep(4)
+        checks = collect()
+        state, reason = classify(checks)
+        log("orphan_repair actions=" + ",".join(action["service"] for action in orphan_actions))
+        if state == "healthy":
+            LAST_RECOVERY_FILE.write_text(
+                json.dumps({"time": utc_now(), "reason": "orphan_repair"}, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        doc = write_status(state, reason, checks, action="orphan_repair", dry_run=False)
+        print(json.dumps(doc, ensure_ascii=False))
+        return 0 if doc["state"] == "healthy" else 1
+
+    doc = write_status(state, reason, checks, action="none", dry_run=False)
+    print(json.dumps(doc, ensure_ascii=False))
+    return 0 if state == "healthy" else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

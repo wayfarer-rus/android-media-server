@@ -1,0 +1,56 @@
+# Sanitized FileBrowser Quantum example for the Android media server guide.
+# Replace the LAN IP, USB volume ID, and displayed source name before use.
+
+server:
+  listen: "192.168.1.50"
+  port: 8088
+  baseURL: "/"
+  database: "/data/data/com.termux/files/home/.local/share/filebrowser-quantum/database.db"
+  cacheDir: "/data/data/com.termux/files/home/.cache/filebrowser-quantum"
+  disableUpdateCheck: true
+  disableWebDAV: true
+  disablePreviews: true
+  disablePreviewResize: true
+  disableTypeDetectionByHeader: true
+  numImageProcessors: 1
+  minSearchLength: 2
+  maxArchiveSize: 20
+  indexSqlConfig:
+    batchSize: 1000
+    cacheSizeMB: 10
+    walMode: false
+    startupIntegrityCheck: "probe"
+  sources:
+    - path: "/mnt/media_rw/<usb-volume-id>"
+      name: "media-drive"
+      config:
+        defaultEnabled: true
+        defaultUserScope: "/"
+        private: true
+        useLogicalSize: true
+        rules:
+          - folderPath: "/"
+            ignoreSymlinks: true
+
+auth:
+  adminUsername: "media-home"
+  methods:
+    password:
+      enabled: true
+      minLength: 8
+      signup: false
+
+frontend:
+  name: "Android Media Files"
+  disableUsedPercentage: true
+
+userDefaults:
+  darkMode: true
+  singleClick: false
+  disableSettings: false
+  account:
+    permissions:
+      admin: true
+      modify: true
+      share: false
+      api: true

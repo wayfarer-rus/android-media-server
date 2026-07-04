@@ -1,0 +1,22 @@
+:root {
+  --bg: #06111d;
+  --surface: #091827;
+  --card: rgba(8, 21, 34, .9);
+  --card-strong: rgba(11, 27, 44, .92);
+  --border: rgba(102, 142, 180, .18);
+  --text: #f2f6fb;
+  --dim: #9ba8ba;
+  --muted: #718096;
+  --blue: #2494ff;
+  --purple: #7a5cff;
+  --green: #35d657;
+  --red: #ef5b5b;
+  --orange: #ff9d24;
+  --yellow: #ffd43b;
+  --ring-c: 326.73;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{background:radial-gradient(circle at 35% 0%,rgba(20,72,112,.22),transparent 34%),linear-gradient(180deg,#04101b 0%,#07121d 54%,#050b13 100%);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;min-height:100vh}
+#app{max-width:1486px;margin:0 auto;padding:22px 24px 28px}
+footer{margin-top:18px;text-align:center;color:var(--muted);font-size:13px}
+footer span{padding:0 8px;color:#4e5b6d}

@@ -1,0 +1,14 @@
+#!/data/data/com.termux/files/usr/bin/sh
+set -u
+
+export HOME=/data/data/com.termux/files/home
+export PREFIX=/data/data/com.termux/files/usr
+export PATH="$HOME/bin:$PREFIX/bin:$PATH"
+
+PORT="${SSHD_PORT:-8022}"
+LISTEN_ADDRESS="${SSHD_LISTEN_ADDRESS:-192.168.1.50}"
+
+mkdir -p "$PREFIX/var/run"
+ssh-keygen -A >/dev/null 2>&1 || true
+
+exec "$PREFIX/bin/sshd" -D -e -p "$PORT" -o "ListenAddress=$LISTEN_ADDRESS"

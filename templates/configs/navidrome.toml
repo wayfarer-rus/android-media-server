@@ -1,0 +1,10 @@
+# Sanitized Navidrome example for the Android media server guide.
+# Replace the LAN IP and USB volume ID before use.
+
+Address = "192.168.1.50"
+Port = "4533"
+MusicFolder = "/mnt/media_rw/<usb-volume-id>/Music"
+DataFolder = "/data/data/com.termux/files/home/.local/share/navidrome"
+
+ScanSchedule = "1h"
+EnableSharing = false

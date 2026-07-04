@@ -1,0 +1,11 @@
+#!/data/data/com.termux/files/usr/bin/sh
+export HOME=/data/data/com.termux/files/home
+export PREFIX=/data/data/com.termux/files/usr
+export PATH="$HOME/bin:$PREFIX/bin:$PATH"
+
+export ANDROID_MEDIA_LAN_IP=192.168.1.50
+export ANDROID_MEDIA_MDNS_NAME=android-media.local
+export ANDROID_MEDIA_SMB_INSTANCE="Android Media"
+export ANDROID_MEDIA_SMB_PORT=1445
+
+exec "$HOME/bin/android-mdns-responder"

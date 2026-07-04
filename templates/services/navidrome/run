@@ -1,0 +1,24 @@
+#!/data/data/com.termux/files/usr/bin/sh
+set -u
+
+export HOME="${HOME:-/data/data/com.termux/files/home}"
+export PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+export PATH="$HOME/bin:$PREFIX/bin:$PATH"
+
+USB_READY="${USB_READY:-$HOME/bin/usb-media-ready}"
+CONFIG="${CONFIG:-$HOME/.config/navidrome/navidrome.toml}"
+
+fail_retry() {
+  printf '%s navidrome: preflight_failed reason=%s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$1"
+  sleep 30
+  exit 111
+}
+
+[ -x "$PREFIX/bin/navidrome" ] || fail_retry "navidrome_binary_missing"
+[ -r "$CONFIG" ] || fail_retry "config_missing"
+"$USB_READY" --quiet || fail_retry "usb_not_ready"
+
+mkdir -p "$HOME/.local/share/navidrome" "$HOME/.cache/navidrome" \
+  "$HOME/.local/state/navidrome"
+
+exec navidrome --configfile "$CONFIG" 2>&1

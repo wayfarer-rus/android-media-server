@@ -1,0 +1,189 @@
+#!/data/data/com.termux/files/usr/bin/python3
+"""Tiny mDNS responder for android-media.local.
+
+This is intentionally small: it answers A queries for one .local name and
+advertises the SMB service when port 1445 is open locally.
+"""
+import os
+import socket
+import struct
+import subprocess
+import time
+
+HOST = os.environ.get("ANDROID_MEDIA_MDNS_NAME", "android-media.local")
+INSTANCE = os.environ.get("ANDROID_MEDIA_SMB_INSTANCE", "Android Media")
+SERVICE = "_smb._tcp.local"
+SERVICE_FQDN = f"{INSTANCE}.{SERVICE}"
+SMB_PORT = int(os.environ.get("ANDROID_MEDIA_SMB_PORT", "1445"))
+MCAST_ADDR = "224.0.0.251"
+MCAST_PORT = 5353
+TTL = 120
+
+
+def log(message):
+    print(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} mdns-android: {message}", flush=True)
+
+
+def wlan_ip():
+    static = os.environ.get("ANDROID_MEDIA_LAN_IP")
+    if static:
+        return static
+    try:
+        out = subprocess.check_output(
+            ["ip", "-4", "addr", "show", "wlan0"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=3,
+        )
+        for line in out.splitlines():
+            line = line.strip()
+            if line.startswith("inet "):
+                return line.split()[1].split("/", 1)[0]
+    except Exception:
+        return None
+    return None
+
+
+def port_open(port):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(0.4)
+    try:
+        sock.connect(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def enc_name(name):
+    out = bytearray()
+    for part in name.rstrip(".").split("."):
+        raw = part.encode("utf-8")
+        out.append(len(raw))
+        out.extend(raw)
+    out.append(0)
+    return bytes(out)
+
+
+def parse_name(data, offset, depth=0):
+    if depth > 8:
+        raise ValueError("too many compression pointers")
+    labels = []
+    while True:
+        length = data[offset]
+        if length & 0xC0 == 0xC0:
+            ptr = ((length & 0x3F) << 8) | data[offset + 1]
+            suffix, _ = parse_name(data, ptr, depth + 1)
+            labels.extend(suffix)
+            return labels, offset + 2
+        if length == 0:
+            return labels, offset + 1
+        offset += 1
+        labels.append(data[offset : offset + length].decode("utf-8", "replace"))
+        offset += length
+
+
+def questions(data):
+    if len(data) < 12:
+        return []
+    qdcount = struct.unpack("!H", data[4:6])[0]
+    offset = 12
+    result = []
+    for _ in range(qdcount):
+        labels, offset = parse_name(data, offset)
+        if offset + 4 > len(data):
+            break
+        qtype, qclass = struct.unpack("!HH", data[offset : offset + 4])
+        offset += 4
+        result.append((".".join(labels).lower(), qtype, qclass))
+    return result
+
+
+def rr(name, rtype, rclass, rdata, cache_flush=False):
+    cls = rclass | (0x8000 if cache_flush else 0)
+    return enc_name(name) + struct.pack("!HHIH", rtype, cls, TTL, len(rdata)) + rdata
+
+
+def a_rr(ip):
+    return rr(HOST, 1, 1, socket.inet_aton(ip), cache_flush=True)
+
+
+def ptr_rr(ptr_name, target):
+    return rr(ptr_name, 12, 1, enc_name(target))
+
+
+def srv_rr():
+    data = struct.pack("!HHH", 0, 0, SMB_PORT) + enc_name(HOST)
+    return rr(SERVICE_FQDN, 33, 1, data, cache_flush=True)
+
+
+def txt_rr():
+    return rr(SERVICE_FQDN, 16, 1, b"\x00", cache_flush=True)
+
+
+def response_for(query_data, announce=False):
+    ip = wlan_ip()
+    if not ip:
+        return None
+    include_smb = port_open(SMB_PORT)
+    answers = []
+
+    if announce:
+        answers.append(a_rr(ip))
+        if include_smb:
+            answers.extend([ptr_rr(SERVICE, SERVICE_FQDN), srv_rr(), txt_rr(), a_rr(ip)])
+    else:
+        qs = questions(query_data)
+        qnames = {q[0] for q in qs}
+        qtypes = {(q[0], q[1]) for q in qs}
+        if HOST in qnames and any(t in (1, 255) for n, t in qtypes if n == HOST):
+            answers.append(a_rr(ip))
+        if include_smb and SERVICE in qnames:
+            answers.extend([ptr_rr(SERVICE, SERVICE_FQDN), srv_rr(), txt_rr(), a_rr(ip)])
+        if include_smb and SERVICE_FQDN.lower() in qnames:
+            answers.extend([srv_rr(), txt_rr(), a_rr(ip)])
+
+    if not answers:
+        return None
+    packet_id = b"\x00\x00" if announce else query_data[:2]
+    header = packet_id + struct.pack("!HHHHH", 0x8400, 0, len(answers), 0, 0)
+    return header + b"".join(answers)
+
+
+def main():
+    ip = wlan_ip()
+    if not ip:
+        log("preflight_failed reason=wlan0_ipv4_missing")
+        time.sleep(30)
+        raise SystemExit(111)
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("", MCAST_PORT))
+    mreq = struct.pack("=4s4s", socket.inet_aton(MCAST_ADDR), socket.inet_aton(ip))
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(ip))
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
+    sock.settimeout(1.0)
+
+    log(f"started host={HOST} ip={ip} service={SERVICE_FQDN}")
+    last_announce = 0
+    while True:
+        now = time.monotonic()
+        if now - last_announce >= 60:
+            packet = response_for(b"", announce=True)
+            if packet:
+                sock.sendto(packet, (MCAST_ADDR, MCAST_PORT))
+            last_announce = now
+        try:
+            data, addr = sock.recvfrom(9000)
+        except socket.timeout:
+            continue
+        packet = response_for(data)
+        if packet:
+            sock.sendto(packet, (MCAST_ADDR, MCAST_PORT))
+
+
+if __name__ == "__main__":
+    main()

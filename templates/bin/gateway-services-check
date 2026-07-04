@@ -1,0 +1,129 @@
+#!/data/data/com.termux/files/usr/bin/sh
+set -u
+
+export HOME="${HOME:-/data/data/com.termux/files/home}"
+export PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+export PATH="$HOME/bin:$PREFIX/bin:$PATH"
+export SVDIR="${SVDIR:-$PREFIX/var/service}"
+
+STATE_DIR="$HOME/.local/state/android-media-server"
+STATUS_FILE="$STATE_DIR/gateway-services.status"
+RECOVERY_STAMP="$STATE_DIR/supervisor-recovery.last"
+
+mkdir -p "$STATE_DIR" "$PREFIX/var/run"
+
+ts=$(date +%Y-%m-%dT%H:%M:%S%z)
+started=0
+note=ok
+recovery=none
+usb=unknown
+
+up_if_present() {
+  svc="$1"
+  [ -d "$SVDIR/$svc" ] && sv up "$SVDIR/$svc" >/dev/null 2>&1 || true
+}
+
+down_if_present() {
+  svc="$1"
+  [ -d "$SVDIR/$svc" ] && sv down "$SVDIR/$svc" >/dev/null 2>&1 || true
+}
+
+service_status() {
+  svc="$1"
+  sv status "$SVDIR/$svc" 2>&1 | tr "\n" " "
+}
+
+orphan_runsv_count_for() {
+  parents="$1"
+  ps -A -o pid,ppid,args 2>/dev/null | awk -v parents="$parents" '
+    BEGIN {
+      split(parents, a)
+      for (i in a) p[a[i]] = 1
+      c = 0
+    }
+    NR > 1 && $3 == "runsv" && !($2 in p) { c++ }
+    END { print c + 0 }
+  '
+}
+
+queue_supervisor_recovery() {
+  now=$(date +%s 2>/dev/null || echo 0)
+  last=0
+  [ -r "$RECOVERY_STAMP" ] && last=$(cat "$RECOVERY_STAMP" 2>/dev/null || echo 0)
+  case "$last" in
+    ""|*[!0-9]*) last=0 ;;
+  esac
+
+  if [ "$now" = "0" ] || [ $((now - last)) -ge 60 ]; then
+    echo "$now" > "$RECOVERY_STAMP"
+    nohup "$HOME/bin/runit-supervisor-watchdog" >> "$STATE_DIR/supervisor-recovery.log" 2>&1 &
+    recovery=queued
+  else
+    recovery=recent
+  fi
+}
+
+runsvdir_pids=$(pgrep -f "^($PREFIX/bin/)?runsvdir $SVDIR$" 2>/dev/null | tr "\n" " ")
+runsvdir_count=$(printf "%s\n" "$runsvdir_pids" | wc -w | tr -d " ")
+runsv_count=$(pgrep -f "^runsv " 2>/dev/null | wc -l | tr -d " ")
+orphan_runsv_count=$(orphan_runsv_count_for "$runsvdir_pids")
+
+if [ "$runsvdir_count" = "0" ]; then
+  if [ "$runsv_count" = "0" ]; then
+    note=runsvdir_missing_restarted
+    rm -f "$PREFIX/var/run/service-daemon.pid"
+    service-daemon start >/dev/null 2>&1 || true
+    started=1
+    sleep 3
+    runsvdir_pids=$(pgrep -f "^($PREFIX/bin/)?runsvdir $SVDIR$" 2>/dev/null | tr "\n" " ")
+    runsvdir_count=$(printf "%s\n" "$runsvdir_pids" | wc -w | tr -d " ")
+    runsv_count=$(pgrep -f "^runsv " 2>/dev/null | wc -l | tr -d " ")
+    orphan_runsv_count=$(orphan_runsv_count_for "$runsvdir_pids")
+  else
+    note=runsvdir_missing_recovery_queued
+    queue_supervisor_recovery
+  fi
+elif [ "$runsvdir_count" -gt "1" ] 2>/dev/null; then
+  note=duplicate_runsvdir_recovery_queued
+  queue_supervisor_recovery
+elif [ "$orphan_runsv_count" -gt "0" ] 2>/dev/null; then
+  note=orphan_runsv_recovery_queued
+  queue_supervisor_recovery
+fi
+
+if [ "$recovery" = "none" ] || [ "$started" = "1" ]; then
+  for svc in sshd gateway-service-watch mdns-android n20-home-dashboard; do
+    up_if_present "$svc"
+  done
+
+  if "$HOME/bin/usb-media-ready" --quiet; then
+    usb=ready
+    for svc in jellyfin navidrome smbd-android filebrowser-quantum audiobookshelf; do
+      up_if_present "$svc"
+    done
+  else
+    usb=missing
+    note="${note}_usb_missing"
+    for svc in jellyfin navidrome smbd-android filebrowser-quantum audiobookshelf; do
+      down_if_present "$svc"
+    done
+  fi
+else
+  usb=not_checked_recovery_pending
+fi
+
+sshd_status=$(service_status sshd)
+jellyfin_status=$(service_status jellyfin)
+navidrome_status=$(service_status navidrome)
+smbd_android_status=$(service_status smbd-android)
+filebrowser_quantum_status=$(service_status filebrowser-quantum)
+audiobookshelf_status=$(service_status audiobookshelf)
+n20_home_dashboard_status=$(service_status n20-home-dashboard)
+
+printf '%s note=%s usb=%s runsvdir_count=%s runsv_count=%s orphan_runsv_count=%s started=%s recovery=%s sshd="%s" jellyfin="%s" navidrome="%s" smbd_android="%s" filebrowser_quantum="%s" audiobookshelf="%s" n20_home_dashboard="%s"\n' \
+  "$ts" "$note" "$usb" "$runsvdir_count" "$runsv_count" "$orphan_runsv_count" "$started" "$recovery" \
+  "$sshd_status" "$jellyfin_status" "$navidrome_status" "$smbd_android_status" \
+  "$filebrowser_quantum_status" "$audiobookshelf_status" "$n20_home_dashboard_status" \
+  > "$STATUS_FILE"
+
+cat "$STATUS_FILE"

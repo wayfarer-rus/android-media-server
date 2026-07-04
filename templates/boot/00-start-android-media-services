@@ -1,0 +1,36 @@
+#!/data/data/com.termux/files/usr/bin/sh
+set -u
+
+export HOME="${HOME:-/data/data/com.termux/files/home}"
+export PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+export PATH="$HOME/bin:$PREFIX/bin:$PATH"
+export SVDIR="${SVDIR:-$PREFIX/var/service}"
+
+termux-wake-lock >/dev/null 2>&1 || true
+mkdir -p "$HOME/.local/state/android-media-server" "$PREFIX/var/run"
+
+orphan_runsv_count_for() {
+  parents="$1"
+  ps -A -o pid,ppid,args 2>/dev/null | awk -v parents="$parents" '
+    BEGIN {
+      split(parents, a)
+      for (i in a) p[a[i]] = 1
+      c = 0
+    }
+    NR > 1 && $3 == "runsv" && !($2 in p) { c++ }
+    END { print c + 0 }
+  '
+}
+
+runsvdir_pids=$(pgrep -f "^($PREFIX/bin/)?runsvdir $SVDIR$" 2>/dev/null | tr "\n" " ")
+runsvdir_count=$(printf "%s\n" "$runsvdir_pids" | wc -w | tr -d " ")
+orphan_runsv_count=$(orphan_runsv_count_for "$runsvdir_pids")
+
+if [ "$runsvdir_count" != "1" ] || [ "$orphan_runsv_count" != "0" ]; then
+  "$HOME/bin/runit-supervisor-watchdog" \
+    >> "$HOME/.local/state/android-media-server/boot.log" 2>&1 || true
+fi
+
+sleep 5
+"$HOME/bin/gateway-services-check" \
+  >> "$HOME/.local/state/android-media-server/boot.log" 2>&1 || true

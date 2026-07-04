@@ -1,0 +1,26 @@
+#!/data/data/com.termux/files/usr/bin/sh
+export HOME=/data/data/com.termux/files/home
+export PREFIX=/data/data/com.termux/files/usr
+export PATH="$HOME/bin:$PREFIX/bin:$PATH"
+export N20_DASHBOARD_HOST=192.168.1.50
+export N20_DASHBOARD_PORT=8080
+export N20_DASHBOARD_PROBE_HOST=127.0.0.1
+export N20_DASHBOARD_PUBLIC_NAME=android-media.local
+export N20_DASHBOARD_ROOT="$HOME/n20-home-dashboard/public"
+export N20_ACTIVITY_LOG="$HOME/n20-home-dashboard/activity.jsonl"
+
+cd "$N20_DASHBOARD_ROOT" || exit 111
+
+[ -r "$N20_DASHBOARD_ROOT/index.html" ] || exit 111
+
+for p in $(pgrep -f "$HOME/n20-home-dashboard/server/n20-dashboard-server.py" 2>/dev/null); do
+  [ "$p" = "$$" ] && continue
+  kill "$p" 2>/dev/null || true
+done
+sleep 1
+for p in $(pgrep -f "$HOME/n20-home-dashboard/server/n20-dashboard-server.py" 2>/dev/null); do
+  [ "$p" = "$$" ] && continue
+  kill -9 "$p" 2>/dev/null || true
+done
+
+exec "$PREFIX/bin/python3" "$HOME/n20-home-dashboard/server/n20-dashboard-server.py"

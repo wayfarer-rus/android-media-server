@@ -1,0 +1,198 @@
+#!/data/data/com.termux/files/usr/bin/python3
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime
+
+PREFIX = os.environ.get("PREFIX", "/data/data/com.termux/files/usr")
+HOME = os.environ.get("HOME", "/data/data/com.termux/files/home")
+REAL_FFMPEG = os.environ.get("REAL_FFMPEG", os.path.join(PREFIX, "bin", "ffmpeg"))
+REAL_FFPROBE = os.environ.get("REAL_FFPROBE", os.path.join(PREFIX, "bin", "ffprobe"))
+LOG = os.environ.get(
+    "JELLYFIN_FFMPEG_WRAPPER_LOG",
+    os.path.join(HOME, ".local", "state", "android-media-server", "jellyfin-ffmpeg-wrapper.log"),
+)
+
+COPYABLE_VIDEO_CODECS = {"h264", "hevc"}
+
+
+def log(message):
+    os.makedirs(os.path.dirname(LOG), exist_ok=True)
+    with open(LOG, "a", encoding="utf-8") as handle:
+        handle.write(f"{datetime.now().isoformat(timespec='seconds')} {message}\n")
+
+
+def first_input(args):
+    for index, arg in enumerate(args[:-1]):
+        if arg == "-i":
+            return args[index + 1]
+    return ""
+
+
+def clean_input_path(path):
+    if path.startswith("file:"):
+        path = path[5:]
+    return path.strip('"')
+
+
+def is_hls(args):
+    for index, arg in enumerate(args[:-1]):
+        if arg == "-f" and args[index + 1] == "hls":
+            return True
+    return False
+
+
+def output_path(args):
+    for arg in reversed(args):
+        if not arg.startswith("-"):
+            return arg
+    return ""
+
+
+def probe_video_stream(path):
+    media_path = clean_input_path(path)
+    if not media_path:
+        return {}
+
+    try:
+        result = subprocess.run(
+            [
+                REAL_FFPROBE,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_name,profile,pix_fmt,bits_per_raw_sample",
+                "-of",
+                "json",
+                media_path,
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=15,
+        )
+    except Exception as exc:
+        log(f"probe-failed input={path} error={exc}")
+        return {}
+
+    streams = json.loads(result.stdout).get("streams") or []
+    stream = streams[0] if streams else {}
+    return {key: (value.lower() if isinstance(value, str) else value) for key, value in stream.items()}
+
+
+def can_copy_video(stream):
+    codec = (stream.get("codec_name") or "").lower()
+    if codec not in COPYABLE_VIDEO_CODECS:
+        return False
+
+    if codec == "h264":
+        pix_fmt = stream.get("pix_fmt") or ""
+        profile = stream.get("profile") or ""
+        bits = str(stream.get("bits_per_raw_sample") or "")
+
+        if pix_fmt != "yuv420p":
+            return False
+        if "10" in profile or bits == "10":
+            return False
+
+    return True
+
+
+def should_force_hls_video_copy(args, media_path):
+    joined = "\0".join(args)
+    if "libx264" not in joined:
+        return False, ""
+    if not is_hls(args):
+        return False, ""
+
+    stream = probe_video_stream(media_path)
+    codec = (stream.get("codec_name") or "").lower()
+    return can_copy_video(stream), codec
+
+
+def rewrite_hls_video_copy(args, codec):
+    output = []
+    index = 0
+    inserted_copy_codec = False
+
+    skip_value_after = {
+        "-preset",
+        "-crf",
+        "-maxrate",
+        "-maxrate:v:0",
+        "-bufsize",
+        "-profile:v:0",
+        "-profile:v",
+        "-level",
+        "-level:v:0",
+        "-x264opts:0",
+        "-x264opts",
+        "-force_key_frames:0",
+        "-force_key_frames",
+        "-sc_threshold:v:0",
+        "-sc_threshold",
+        "-vf",
+        "-filter:v:0",
+        "-filter:v",
+    }
+
+    while index < len(args):
+        arg = args[index]
+
+        if arg in skip_value_after and index + 1 < len(args):
+            index += 2
+            continue
+
+        if arg.startswith("-vf") and arg != "-vf":
+            index += 1
+            continue
+
+        if arg in ("-codec:v:0", "-c:v:0", "-codec:v", "-c:v") and index + 1 < len(args):
+            if not inserted_copy_codec:
+                output.extend(copy_args_for(codec))
+                inserted_copy_codec = True
+            index += 2
+            continue
+
+        output.append(arg)
+        index += 1
+
+    if not inserted_copy_codec:
+        insert_at = 0
+        for index, arg in enumerate(output):
+            if arg == "-map_metadata":
+                insert_at = index
+                break
+        output[insert_at:insert_at] = copy_args_for(codec)
+
+    return output
+
+
+def copy_args_for(codec):
+    args = ["-codec:v:0", "copy"]
+    if codec == "hevc":
+        args.extend(["-tag:v:0", "hvc1", "-bsf:v", "hevc_mp4toannexb"])
+    elif codec == "h264":
+        args.extend(["-bsf:v", "h264_mp4toannexb"])
+    return args
+
+
+def main():
+    args = sys.argv[1:]
+    media_path = first_input(args)
+    copy_hls, codec = should_force_hls_video_copy(args, media_path)
+
+    if copy_hls:
+        new_args = rewrite_hls_video_copy(args, codec)
+        log(f"rewrite=hls-video-copy codec={codec} input={media_path} output={output_path(args)}")
+        os.execv(REAL_FFMPEG, [REAL_FFMPEG] + new_args)
+
+    os.execv(REAL_FFMPEG, [REAL_FFMPEG] + args)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,30 @@
+#!/data/data/com.termux/files/usr/bin/sh
+set -u
+
+export HOME=/data/data/com.termux/files/home
+export PREFIX=/data/data/com.termux/files/usr
+export PATH="$HOME/bin:$PREFIX/bin:$PATH"
+
+CONF="$HOME/samba/smb-media-drive.conf"
+SERVICE="smbd-android"
+
+log() {
+  printf '%s %s[%s]: %s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$SERVICE" "$$" "$*"
+}
+
+fail_retry() {
+  log "preflight_failed reason=$1"
+  sleep 30
+  exit 111
+}
+
+[ -r "$CONF" ] || fail_retry "config_not_readable"
+"$HOME/bin/usb-media-ready" --quiet || fail_retry "usb_not_ready"
+
+if ! testparm -s "$CONF" >/dev/null 2>&1; then
+  testparm -s "$CONF" 2>&1 | sed 's/^/testparm: /'
+  fail_retry "testparm_failed"
+fi
+
+log "starting_smbd config=$CONF"
+exec "$PREFIX/bin/smbd" --foreground --configfile="$CONF" 2>&1

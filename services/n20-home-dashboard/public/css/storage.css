@@ -1,0 +1,29 @@
+.progress-row{display:flex;align-items:center;gap:14px}
+.progress-track{flex:1;height:7px;background:rgba(124,149,171,.16);border-radius:4px;overflow:hidden}
+.progress-fill{height:100%;border-radius:4px;background:linear-gradient(90deg,var(--blue),#3f7cff);transition:width .4s ease}
+.progress-label{font-size:13px;font-weight:700;min-width:44px;text-align:right;color:var(--dim)}
+.storage-ring-row{display:grid;grid-template-columns:150px 145px;align-items:center;gap:22px;padding:20px 0 12px}
+.ring-container{position:relative;width:142px;height:142px;flex-shrink:0}
+.ring{width:100%;height:100%;transform:rotate(-90deg)}
+.ring-bg{stroke:rgba(124,149,171,.18)}
+.ring-fill{fill:none;stroke:var(--blue);stroke-dasharray:var(--ring-c);stroke-dashoffset:var(--ring-c);transition:stroke-dashoffset .5s ease}
+.ring-label{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:500;flex-direction:column;line-height:1.15}
+.ring-label small{display:block;color:var(--dim);font-size:13px;font-weight:500;margin-top:2px}
+.storage-details{display:grid;gap:15px;font-size:14px;color:var(--dim);line-height:1.2}
+.detail-line{white-space:nowrap}
+.detail-line::before{content:"";display:inline-block;width:11px;height:11px;border-radius:50%;background:var(--blue);margin-right:10px}
+#usb-free-line::before{background:#2ca8ff}
+#usb-total-line::before{background:var(--purple)}
+#folder-list{list-style:none;font-size:14px;color:var(--text);display:grid;gap:10px}
+#folder-list li{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:18px;padding:0}
+#folder-list li span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#folder-list li span:first-child::before{content:"▰";color:var(--yellow);font-size:12px;margin-right:8px}
+#folder-list li span:last-child{color:var(--text);font-weight:600;text-align:right}
+.internal-storage{margin-top:16px;padding:18px 0 0;border-top:1px solid var(--border);border-left:0;min-height:0}
+.internal-storage .section-subtitle{margin-top:0;color:var(--text);font-size:15px}
+.usb-state{display:inline-flex;align-items:center;gap:8px;font-size:13px;padding:6px 12px;border-radius:9px;background:rgba(53,214,87,.12);color:var(--dim)}
+.usb-state::before{content:"";width:10px;height:10px;border-radius:50%;background:currentColor}
+.usb-state.mounted{color:var(--green)}
+.usb-state.unmounted{color:var(--orange);background:rgba(255,157,36,.12)}
+.usb-body{display:grid;grid-template-columns:minmax(285px,.95fr) minmax(210px,1fr);align-items:start;gap:28px}
+.top-folders{grid-column:2;grid-row:1}

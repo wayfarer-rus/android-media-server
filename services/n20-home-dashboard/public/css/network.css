@@ -1,0 +1,6 @@
+#card-network{display:grid;grid-template-columns:130px repeat(4,minmax(0,1fr));align-items:center;gap:14px}
+#card-network .card-title{grid-row:1 / span 2;margin:0;font-size:18px}
+.net-row{display:flex;flex-direction:column;justify-content:center;min-height:76px;padding:14px 14px;border:1px solid var(--border);border-radius:7px;background:rgba(255,255,255,.018);font-size:14px}
+.net-label{color:var(--dim);margin-bottom:4px}
+.net-val{color:var(--text);font-size:16px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card-hint{grid-column:1/-1}

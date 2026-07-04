@@ -1,0 +1,26 @@
+# Raw local source material for the public guide.
+# Keep these available locally, but do not publish them directly.
+docs/note20-memos/
+docs/local/
+archive/
+ops/
+
+# Large/private media workflow artifacts.
+media-workflows/
+
+# Media files should never be committed to the guide repository.
+*.mkv
+*.mp4
+*.m4v
+*.avi
+*.mov
+*.mp3
+*.m4a
+*.flac
+*.aac
+*.iso
+*.ifo
+*.bup
+
+# Local machine noise.
+.DS_Store
