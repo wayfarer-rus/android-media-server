@@ -2,7 +2,7 @@
 """N20 Home Dashboard - telemetry server."""
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
-import json, os, re, socket, subprocess, time, threading
+import json, os, re, shutil, socket, subprocess, time, threading
 from datetime import datetime, timezone
 
 HOST = os.environ.get("N20_DASHBOARD_HOST", "192.168.1.50")
@@ -15,6 +15,7 @@ WATCHDOG_STATUS = Path(os.environ.get("N20_WATCHDOG_STATUS",
     "/data/data/com.termux/files/home/.local/state/runit-supervisor-watchdog/status.json"))
 PROBE_HOST = os.environ.get("N20_DASHBOARD_PROBE_HOST", "127.0.0.1")
 MDNS = os.environ.get("N20_DASHBOARD_PUBLIC_NAME", "android-media.local")
+SAMBA_SERVICE = os.environ.get("N20_DASHBOARD_SAMBA_SERVICE", "smbd-android")
 
 _cache = {}
 _cache_lock = threading.Lock()
@@ -167,6 +168,15 @@ def _probe_http(url, timeout=4):
     except Exception:
         return False
 
+def _run_json_args(args, timeout=5):
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        if r.returncode != 0:
+            return None
+        return json.loads(r.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return None
+
 def _sv_status(svc):
     out = _run('sv status "$PREFIX/var/service/%s" 2>/dev/null' % svc, timeout=3)
     if not out: return "unknown"
@@ -179,7 +189,7 @@ SVC_DEF = [
     {"id":"audiobookshelf","title":"Audiobooks","port":13378,"svc":"audiobookshelf","kind":"http","url":"http://%s:13378/audiobookshelf/" % MDNS},
     {"id":"navidrome","title":"Music Jukebox","port":4533,"svc":"navidrome","kind":"http","url":"http://%s:4533/app/" % MDNS},
     {"id":"jellyfin","title":"Jellyfin","port":8096,"svc":"jellyfin","kind":"http","url":"http://%s:8096/" % MDNS},
-    {"id":"samba","title":"Samba","port":1445,"svc":"smbd-android","kind":"tcp","url":None},
+    {"id":"samba","title":"Samba","port":1445,"svc":SAMBA_SERVICE,"kind":"tcp","url":None},
     {"id":"ssh","title":"SSH","port":8022,"svc":"sshd","kind":"tcp","url":None},
     {"id":"home-dashboard","title":"Home Dashboard","port":8080,"svc":"n20-home-dashboard","kind":"http","url":"http://%s:8080/" % MDNS},
     {"id":"local-llm","title":"Local LLM","port":11434,"svc":None,"kind":"tcp","url":None},
@@ -219,17 +229,83 @@ def collect_services():
         result.append(entry)
     return result
 
+def collect_tailscale():
+    status = _run_json_args(["tailscale", "status", "--json"], timeout=5)
+    if not isinstance(status, dict):
+        installed = shutil.which("tailscale") is not None
+        return {
+            "installed": installed,
+            "backend_state": "unavailable" if installed else "not_installed",
+            "online": False,
+            "hostname": None,
+            "dns_name": None,
+            "ipv4": None,
+            "ipv6": None,
+            "relay": None,
+            "peer_count": 0,
+            "online_peer_count": 0,
+            "active_peer_count": 0,
+            "serve_enabled": False,
+            "serve_ports": [],
+            "serve_web_count": 0,
+            "exit_node": False,
+            "exit_node_option": False,
+            "advertised_route_count": 0,
+        }
+
+    self_node = status.get("Self") if isinstance(status.get("Self"), dict) else {}
+    peers = status.get("Peer") if isinstance(status.get("Peer"), dict) else {}
+    ips = self_node.get("TailscaleIPs") if isinstance(self_node.get("TailscaleIPs"), list) else []
+    ipv4 = next((ip for ip in ips if isinstance(ip, str) and ":" not in ip), None)
+    ipv6 = next((ip for ip in ips if isinstance(ip, str) and ":" in ip), None)
+    primary_routes = self_node.get("PrimaryRoutes")
+    if not isinstance(primary_routes, list):
+        primary_routes = []
+
+    serve = _run_json_args(["tailscale", "serve", "status", "--json"], timeout=5)
+    tcp = serve.get("TCP") if isinstance(serve, dict) and isinstance(serve.get("TCP"), dict) else {}
+    web = serve.get("Web") if isinstance(serve, dict) and isinstance(serve.get("Web"), dict) else {}
+    serve_ports = sorted(str(p) for p in tcp.keys())
+
+    dns_name = self_node.get("DNSName")
+    if isinstance(dns_name, str):
+        dns_name = dns_name.rstrip(".")
+    else:
+        dns_name = None
+
+    return {
+        "installed": True,
+        "backend_state": status.get("BackendState") or "unknown",
+        "online": bool(self_node.get("Online")),
+        "hostname": self_node.get("HostName"),
+        "dns_name": dns_name,
+        "ipv4": ipv4,
+        "ipv6": ipv6,
+        "relay": self_node.get("Relay"),
+        "peer_count": len(peers),
+        "online_peer_count": sum(1 for p in peers.values() if isinstance(p, dict) and p.get("Online")),
+        "active_peer_count": sum(1 for p in peers.values() if isinstance(p, dict) and p.get("Active")),
+        "serve_enabled": bool(serve_ports or web),
+        "serve_ports": serve_ports,
+        "serve_web_count": len(web),
+        "exit_node": bool(self_node.get("ExitNode")),
+        "exit_node_option": bool(self_node.get("ExitNodeOption")),
+        "advertised_route_count": len(primary_routes),
+    }
+
 def collect_status():
     host = _cached("host", collect_host, 15)
     battery = _cached("battery", collect_battery, 15)
     wifi = _cached("wifi", collect_wifi, 15)
+    tailscale = _cached("tailscale", collect_tailscale, 15)
     cpu = collect_cpu()
     memory = _cached("memory", collect_memory, 5)
     storage = _cached("storage", collect_storage, 60)
     services = collect_services()
     supervisor = collect_supervisor()
-    all_up = all(s["reachable"] for s in services if s["id"]!="local-llm") and supervisor.get("state") in ("healthy", "unknown")
-    return {"timestamp":datetime.now(timezone.utc).isoformat(),"online":all_up,"host":host,"battery":battery,"wifi":wifi,"cpu":cpu,"memory":memory,"storage":storage,"services":services,"supervisor":supervisor}
+    tailscale_ok = (not tailscale.get("installed")) or tailscale.get("online")
+    all_up = all(s["reachable"] for s in services if s["id"]!="local-llm") and supervisor.get("state") in ("healthy", "unknown") and tailscale_ok
+    return {"timestamp":datetime.now(timezone.utc).isoformat(),"online":all_up,"host":host,"battery":battery,"wifi":wifi,"tailscale":tailscale,"cpu":cpu,"memory":memory,"storage":storage,"services":services,"supervisor":supervisor}
 
 def append_activity(event, detail=""):
     with _activity_lock:

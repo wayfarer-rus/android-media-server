@@ -7,9 +7,11 @@
   .header-center p{margin-top:2px}
   .header-right{width:100%;justify-content:space-between}
   #status-strip{grid-template-columns:1fr}
-  .strip-item{min-height:78px;border-right:0;border-bottom:1px solid var(--border)}
+  .strip-item{min-height:78px;border-right:0;border-top:0;border-bottom:1px solid var(--border)}
+  .strip-item:nth-child(n+5){border-top:0}
   .strip-item:last-child{border-bottom:0}
-  #dashboard-grid{grid-template-columns:1fr;grid-template-areas:"storage" "cpu" "memory" "network" "services" "activity"}
+  #dashboard-grid{grid-template-columns:1fr}
+  .dashboard-metrics{grid-template-columns:1fr}
   .card-wide{grid-column:auto}
   .cores-grid{grid-template-columns:1fr}
   .core-item{grid-template-columns:44px 1fr 44px}
@@ -20,15 +22,18 @@
   .ring-container{width:72px;height:72px}
   .ring-label{font-size:13px}
   .internal-storage{border-left:0;padding-left:0}
-  #card-network{grid-template-columns:1fr}
-  #card-network .card-title{grid-row:auto}
+  .network-head{align-items:flex-start}
+  .network-groups{grid-template-columns:1fr}
+  .net-row{grid-template-columns:minmax(80px,32%) minmax(0,1fr)}
   .mem-values{grid-template-columns:1fr}
 }
 @media(min-width:769px) and (max-width:1180px){
-  #status-strip{grid-template-columns:repeat(3,minmax(0,1fr))}
-  .strip-item:nth-child(3n){border-right:0}
-  #dashboard-grid{grid-template-columns:repeat(6,minmax(0,1fr));grid-template-areas:"storage storage storage storage storage storage" "cpu cpu cpu memory memory memory" "network network network network network network" "services services services services services services" "activity activity activity activity activity activity"}
+  #status-strip{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .strip-item{border-top:0}
+  .strip-item:nth-child(2n){border-right:0}
+  .strip-item:nth-child(n+3){border-top:1px solid var(--border)}
+  #dashboard-grid{grid-template-columns:1fr}
+  .dashboard-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
   .services-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
-  #card-network{grid-template-columns:repeat(2,minmax(0,1fr))}
-  #card-network .card-title{grid-column:1/-1;grid-row:auto}
+  .network-groups{grid-template-columns:repeat(2,minmax(0,1fr))}
 }

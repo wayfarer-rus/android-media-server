@@ -23,6 +23,7 @@ function updateStrip(d) {
   const speed = w.link_speed_mbps != null ? w.link_speed_mbps + " Mbps" : "";
   setEl("strip-wifi-meta", speed ? sig + " \u2022 " + speed : sig);
   setEl("strip-ip", w.ip ?? "\u2014");
+  updateTailscaleStrip(d.tailscale);
   if (bt.temperature_c != null) {
     document.getElementById("strip-temp-card").style.display = "";
     setEl("strip-temp", Math.round(bt.temperature_c) + "\u00B0C");
@@ -43,6 +44,20 @@ function updateSupervisorStrip(s) {
   setEl("strip-supervisor-meta", services + " · checked " + checked + recovery);
   const icon = document.getElementById("strip-supervisor-icon");
   if (icon) icon.className = "strip-icon supervisor-" + state;
+}
+
+function updateTailscaleStrip(t) {
+  t = t || {};
+  const installed = !!t.installed;
+  const online = installed && !!t.online;
+  const label = !installed ? "Not installed" : online ? "Running" : (t.backend_state || "Stopped");
+  setEl("strip-tailscale", label);
+  const peerPart = installed ? (t.active_peer_count || 0) + "/" + (t.peer_count || 0) + " active peers" : "Private access off";
+  const ipPart = online ? (t.ipv4 || t.dns_name || "No IP") : "No tunnel";
+  const relayPart = t.relay ? " · DERP " + t.relay : "";
+  setEl("strip-tailscale-meta", installed ? ipPart + " · " + peerPart + relayPart : peerPart);
+  const icon = document.getElementById("strip-tailscale-icon");
+  if (icon) icon.className = "strip-icon tailscale-" + (online ? "healthy" : installed ? "degraded" : "unknown");
 }
 
 function updateStorage(d) {
@@ -130,12 +145,66 @@ function updateMemory(d) {
 
 function updateNetwork(d) {
   const w = d.wifi;
-  if (w.ssid) { document.getElementById("net-ssid").style.display = ""; setEl("net-ssid-val", w.ssid); }
+  const t = d.tailscale || {};
+  const ssidRow = document.getElementById("net-ssid");
+  if (w.ssid) {
+    if (ssidRow) ssidRow.style.display = "";
+    setNetworkText("net-ssid-val", w.ssid);
+  } else if (ssidRow) {
+    ssidRow.style.display = "none";
+  }
   const r = w.rssi_dbm != null ? w.rssi_dbm+" dBm ("+rssiLabel(w.rssi_dbm)+")" : "\u2014";
-  setEl("net-rssi", r);
-  setEl("net-speed", w.link_speed_mbps != null ? w.link_speed_mbps+" Mbps" : "\u2014");
-  setEl("net-freq", w.frequency_mhz != null ? w.frequency_mhz+" MHz" : "\u2014");
-  setEl("net-ip", w.ip ?? "\u2014");
+  setNetworkText("net-rssi", r);
+  setNetworkText("net-speed", w.link_speed_mbps != null ? w.link_speed_mbps+" Mbps" : "\u2014");
+  setNetworkText("net-freq", w.frequency_mhz != null ? w.frequency_mhz+" MHz" : "\u2014");
+  setNetworkText("net-ip", w.ip ?? "\u2014");
+  if (t.installed) {
+    const state = t.online ? "Running" : (t.backend_state || "Stopped");
+    setNetworkText("net-ts-state", state);
+    setNetworkText("net-ts-name", t.dns_name || t.hostname || "\u2014");
+    setNetworkText("net-ts-ip", t.ipv4 || "\u2014");
+    setNetworkText("net-ts-peers", (t.active_peer_count || 0) + "/" + (t.peer_count || 0) + " active");
+    setServePorts(t);
+    updateNetworkPill(state, t.online ? "healthy" : "degraded");
+  } else {
+    setNetworkText("net-ts-state", "Not installed");
+    setNetworkText("net-ts-name", "\u2014");
+    setNetworkText("net-ts-ip", "\u2014");
+    setNetworkText("net-ts-peers", "\u2014");
+    setServePorts({});
+    updateNetworkPill("Not installed", "unknown");
+  }
+}
+
+function setNetworkText(id, value) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const text = value == null ? "\u2014" : String(value);
+  el.textContent = text;
+  el.title = text === "\u2014" ? "" : text;
+}
+
+function updateNetworkPill(label, state) {
+  const pill = document.getElementById("net-ts-pill");
+  if (!pill) return;
+  pill.textContent = "Tailscale " + label;
+  pill.className = "net-status-pill " + state;
+}
+
+function setServePorts(t) {
+  const el = document.getElementById("net-ts-serve");
+  if (!el) return;
+  const ports = Array.isArray(t.serve_ports) ? t.serve_ports : [];
+  if (t.serve_enabled && ports.length) {
+    el.innerHTML = ports.map(function(port) {
+      return '<span class="net-chip">' + esc(port) + '</span>';
+    }).join("");
+    el.title = "Private Serve ports: " + ports.join(", ");
+    return;
+  }
+  const fallback = t.serve_enabled && t.serve_web_count ? t.serve_web_count + " web" : "Off";
+  el.textContent = fallback;
+  el.title = fallback === "Off" ? "" : fallback;
 }
 
 function updateServices(d) {

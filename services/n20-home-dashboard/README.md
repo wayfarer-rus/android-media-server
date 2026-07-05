@@ -15,9 +15,10 @@ LAN-only web dashboard for the Samsung Galaxy Note 20 NAS.
 The public hostname is intentionally an example. Set
 `N20_DASHBOARD_PUBLIC_NAME` to your own mDNS name, such as
 `android-media.local`, and set `N20_DASHBOARD_HOST` to your phone's real LAN IP.
-`192.168.1.50` is only a sample. Set `N20_DASHBOARD_PROBE_HOST` to the address
-the phone should use when checking local services. `127.0.0.1` is usually enough
-because the dashboard runs on the same device as the media services.
+`192.168.1.50` is only a sample. `N20_DASHBOARD_PROBE_HOST` defaults to
+`N20_DASHBOARD_HOST`, which works for services bound to the phone LAN address.
+Set `N20_DASHBOARD_SAMBA_SERVICE` if your Samba runit service has a local name
+other than `smbd-android`.
 
 ## Directory layout
 
@@ -49,6 +50,13 @@ n20-home-dashboard/
 | USB storage | `df` + `/proc/mounts` + `du -sh` for top folders |
 | Internal storage | `df /data` |
 | Service health | TCP/HTTP probes + `sv status` |
+| Tailscale access | sanitized `tailscale status --json` + `tailscale serve status --json` |
+
+The Network card groups Wi-Fi details and private Tailscale access details in
+separate compact sections. The Tailscale status is intentionally filtered before
+it reaches the browser. It shows the local node state, MagicDNS name, Tailscale
+IPs, peer counts, DERP home, and private Serve port list. It does not expose
+account emails, peer hostnames, public keys, auth URLs, or raw peer objects.
 
 ## Intentionally omitted (not available without root)
 

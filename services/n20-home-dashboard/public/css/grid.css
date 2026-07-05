@@ -1,11 +1,7 @@
-#dashboard-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));grid-template-areas:"storage storage storage storage storage cpu cpu cpu memory memory memory memory" "storage storage storage storage storage network network network network network network network" "services services services services services services services activity activity activity activity activity";gap:16px;align-items:start}
+#dashboard-grid{display:grid;grid-template-columns:minmax(430px,.42fr) minmax(0,.58fr);gap:16px;align-items:start}
+.dashboard-column{display:grid;gap:16px;min-width:0;align-content:start}
+.dashboard-metrics{display:grid;grid-template-columns:minmax(300px,.44fr) minmax(0,.56fr);gap:16px;align-items:start}
 .card{align-self:start;background:linear-gradient(180deg,rgba(9,24,39,.94),rgba(6,18,31,.94));border:1px solid var(--border);border-radius:8px;padding:16px 20px;box-shadow:0 18px 48px rgba(0,0,0,.18),inset 0 1px 0 rgba(255,255,255,.03)}
-#card-storage{grid-area:storage}
-#card-cpu{grid-area:cpu}
-#card-memory{grid-area:memory}
-#card-network{grid-area:network}
-#card-services{grid-area:services}
-#card-activity{grid-area:activity}
 .card-wide{grid-column:auto}
 .card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding-bottom:10px;margin-bottom:12px;border-bottom:1px solid var(--border)}
 .card-title{font-size:17px;font-weight:750;letter-spacing:0;color:var(--text);margin-bottom:0}

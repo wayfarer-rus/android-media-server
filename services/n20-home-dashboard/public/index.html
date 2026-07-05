@@ -59,110 +59,139 @@
       <span class="strip-icon">⌘</span>
       <span><span class="strip-label">Local IP</span><b id="strip-ip">&#8212;</b><small>LAN</small></span>
     </article>
+    <article class="strip-item" title="Tailscale">
+      <span id="strip-tailscale-icon" class="strip-icon tailscale-unknown">◇</span>
+      <span><span class="strip-label">Tailscale</span><b id="strip-tailscale">&#8212;</b><small id="strip-tailscale-meta">&#8212;</small></span>
+    </article>
     <article id="strip-temp-card" class="strip-item" title="Battery Temperature">
       <span class="strip-icon strip-hot">♨</span>
       <span><span class="strip-label">Temperature</span><b id="strip-temp">&#8212;</b><small id="strip-temp-state">Normal</small></span>
     </article>
   </section>
   <main id="dashboard-grid">
-    <section id="card-storage" class="card">
-      <div class="card-head">
-        <div>
-          <div class="card-title">USB Storage <span>(Main)</span></div>
-          <div class="card-path">/mnt/media_rw</div>
-        </div>
-      </div>
-      <div id="usb-state" class="usb-state">Checking...</div>
-      <div id="usb-body" class="usb-body" style="display:none">
-        <div class="storage-ring-row">
-          <div class="ring-container">
-            <svg class="ring" viewBox="0 0 120 120">
-              <circle class="ring-bg" cx="60" cy="60" r="52" fill="none" stroke="var(--border)" stroke-width="10"/>
-              <circle class="ring-fill" cx="60" cy="60" r="52" fill="none" stroke-width="10" stroke-linecap="round"/>
-            </svg>
-            <div class="ring-label"><span><span id="usb-pct">&#8212;</span>%</span><small>Used</small></div>
-          </div>
-          <div class="storage-details">
-            <div id="usb-used-line" class="detail-line">Used: &#8212;</div>
-            <div id="usb-free-line" class="detail-line">Free: &#8212;</div>
-            <div id="usb-total-line" class="detail-line">Total: &#8212;</div>
+    <div class="dashboard-column dashboard-left">
+      <section id="card-storage" class="card">
+        <div class="card-head">
+          <div>
+            <div class="card-title">USB Storage <span>(Main)</span></div>
+            <div class="card-path">/mnt/media_rw</div>
           </div>
         </div>
-        <div id="top-folders" class="top-folders" style="display:none">
-          <div class="section-subtitle">Top folders</div>
-          <ul id="folder-list"></ul>
+        <div id="usb-state" class="usb-state">Checking...</div>
+        <div id="usb-body" class="usb-body" style="display:none">
+          <div class="storage-ring-row">
+            <div class="ring-container">
+              <svg class="ring" viewBox="0 0 120 120">
+                <circle class="ring-bg" cx="60" cy="60" r="52" fill="none" stroke="var(--border)" stroke-width="10"/>
+                <circle class="ring-fill" cx="60" cy="60" r="52" fill="none" stroke-width="10" stroke-linecap="round"/>
+              </svg>
+              <div class="ring-label"><span><span id="usb-pct">&#8212;</span>%</span><small>Used</small></div>
+            </div>
+            <div class="storage-details">
+              <div id="usb-used-line" class="detail-line">Used: &#8212;</div>
+              <div id="usb-free-line" class="detail-line">Free: &#8212;</div>
+              <div id="usb-total-line" class="detail-line">Total: &#8212;</div>
+            </div>
+          </div>
+          <div id="top-folders" class="top-folders" style="display:none">
+            <div class="section-subtitle">Top folders</div>
+            <ul id="folder-list"></ul>
+          </div>
         </div>
-      </div>
-      <div id="internal-storage" class="internal-storage">
-        <div class="section-subtitle">Internal Storage</div>
-        <div class="progress-row">
-          <div class="progress-track"><div id="internal-bar" class="progress-fill" style="width:0%"></div></div>
-          <span id="internal-pct" class="progress-label">&#8212;%</span>
+        <div id="internal-storage" class="internal-storage">
+          <div class="section-subtitle">Internal Storage</div>
+          <div class="progress-row">
+            <div class="progress-track"><div id="internal-bar" class="progress-fill" style="width:0%"></div></div>
+            <span id="internal-pct" class="progress-label">&#8212;%</span>
+          </div>
         </div>
+      </section>
+      <section id="card-services" class="card card-wide">
+        <div class="card-title">Services</div>
+        <div id="services-grid" class="services-grid"></div>
+      </section>
+    </div>
+    <div class="dashboard-column dashboard-right">
+      <div class="dashboard-metrics">
+        <section id="card-cpu" class="card">
+          <div class="card-head">
+            <div class="card-title">CPU</div>
+          </div>
+          <div class="loadavg-row">
+            <span class="load-label">Load avg</span>
+            <span id="load-1" class="load-val">&#8212;</span>
+            <span class="load-label">/</span>
+            <span id="load-5" class="load-val">&#8212;</span>
+            <span class="load-label">/</span>
+            <span id="load-15" class="load-val">&#8212;</span>
+          </div>
+          <div id="cores-grid" class="cores-grid"></div>
+          <div class="card-hint">Frequency only &#8212; utilization not available without root</div>
+        </section>
+        <section id="card-memory" class="card">
+          <div class="card-head">
+            <div class="card-title">Memory</div>
+          </div>
+          <div class="mem-section">
+            <div class="mem-label">RAM</div>
+            <div class="progress-row">
+              <div class="progress-track"><div id="ram-bar" class="progress-fill ram-fill" style="width:0%"></div></div>
+              <span id="ram-pct" class="progress-label">&#8212;%</span>
+            </div>
+            <div class="mem-values">
+              <span id="ram-used">Used: &#8212;</span>
+              <span id="ram-available">Available: &#8212;</span>
+              <span id="ram-cache">Cache: &#8212;</span>
+            </div>
+          </div>
+          <div class="mem-section">
+            <div class="mem-label">Swap</div>
+            <div class="progress-row">
+              <div class="progress-track"><div id="swap-bar" class="progress-fill swap-fill" style="width:0%"></div></div>
+              <span id="swap-pct" class="progress-label">&#8212;%</span>
+            </div>
+            <div class="mem-values">
+              <span id="swap-used">Used: &#8212;</span>
+              <span id="swap-free">Free: &#8212;</span>
+            </div>
+          </div>
+        </section>
       </div>
-    </section>
-    <section id="card-cpu" class="card">
-      <div class="card-head">
-        <div class="card-title">CPU</div>
-      </div>
-      <div class="loadavg-row">
-        <span class="load-label">Load avg</span>
-        <span id="load-1" class="load-val">&#8212;</span>
-        <span class="load-label">/</span>
-        <span id="load-5" class="load-val">&#8212;</span>
-        <span class="load-label">/</span>
-        <span id="load-15" class="load-val">&#8212;</span>
-      </div>
-      <div id="cores-grid" class="cores-grid"></div>
-      <div class="card-hint">Frequency only &#8212; utilization not available without root</div>
-    </section>
-    <section id="card-memory" class="card">
-      <div class="card-head">
-        <div class="card-title">Memory</div>
-      </div>
-      <div class="mem-section">
-        <div class="mem-label">RAM</div>
-        <div class="progress-row">
-          <div class="progress-track"><div id="ram-bar" class="progress-fill ram-fill" style="width:0%"></div></div>
-          <span id="ram-pct" class="progress-label">&#8212;%</span>
+      <section id="card-network" class="card">
+        <div class="card-head network-head">
+          <div>
+            <div class="card-title">Network</div>
+            <div class="card-path">Wi-Fi and private overlay</div>
+          </div>
+          <span id="net-ts-pill" class="net-status-pill unknown">Tailscale &#8212;</span>
         </div>
-        <div class="mem-values">
-          <span id="ram-used">Used: &#8212;</span>
-          <span id="ram-available">Available: &#8212;</span>
-          <span id="ram-cache">Cache: &#8212;</span>
+        <div class="network-groups">
+          <div class="network-group">
+            <div class="network-group-title">Wi-Fi</div>
+            <div id="net-ssid" class="net-row" style="display:none"><span class="net-label">SSID</span><span id="net-ssid-val" class="net-val"></span></div>
+            <div class="net-row prominent"><span class="net-label">Signal</span><span id="net-rssi" class="net-val">&#8212;</span></div>
+            <div class="net-row"><span class="net-label">Link speed</span><span id="net-speed" class="net-val">&#8212;</span></div>
+            <div class="net-row"><span class="net-label">Frequency</span><span id="net-freq" class="net-val">&#8212;</span></div>
+            <div class="net-row"><span class="net-label">LAN IP</span><span id="net-ip" class="net-val">&#8212;</span></div>
+          </div>
+          <div class="network-group">
+            <div class="network-group-title">Tailscale</div>
+            <div class="net-row prominent"><span class="net-label">State</span><span id="net-ts-state" class="net-val">&#8212;</span></div>
+            <div class="net-row"><span class="net-label">MagicDNS</span><span id="net-ts-name" class="net-val net-long">&#8212;</span></div>
+            <div class="net-row"><span class="net-label">Tailnet IP</span><span id="net-ts-ip" class="net-val">&#8212;</span></div>
+            <div class="net-row"><span class="net-label">Peers</span><span id="net-ts-peers" class="net-val">&#8212;</span></div>
+            <div class="net-row"><span class="net-label">Private Serve</span><span id="net-ts-serve" class="net-val net-chips">&#8212;</span></div>
+          </div>
         </div>
-      </div>
-      <div class="mem-section">
-        <div class="mem-label">Swap</div>
-        <div class="progress-row">
-          <div class="progress-track"><div id="swap-bar" class="progress-fill swap-fill" style="width:0%"></div></div>
-          <span id="swap-pct" class="progress-label">&#8212;%</span>
+        <div class="card-hint">Throughput not available without root</div>
+      </section>
+      <section id="card-activity" class="card card-wide">
+        <div class="card-head">
+          <div class="card-title">Activity Feed</div>
         </div>
-        <div class="mem-values">
-          <span id="swap-used">Used: &#8212;</span>
-          <span id="swap-free">Free: &#8212;</span>
-        </div>
-      </div>
-    </section>
-    <section id="card-network" class="card">
-      <div class="card-title">Network</div>
-      <div id="net-ssid" class="net-row" style="display:none"><span class="net-label">SSID</span><span id="net-ssid-val" class="net-val"></span></div>
-      <div class="net-row"><span class="net-label">Signal</span><span id="net-rssi" class="net-val">&#8212;</span></div>
-      <div class="net-row"><span class="net-label">Link speed</span><span id="net-speed" class="net-val">&#8212;</span></div>
-      <div class="net-row"><span class="net-label">Frequency</span><span id="net-freq" class="net-val">&#8212;</span></div>
-      <div class="net-row"><span class="net-label">LAN IP</span><span id="net-ip" class="net-val">&#8212;</span></div>
-      <div class="card-hint">Throughput not available without root</div>
-    </section>
-    <section id="card-services" class="card card-wide">
-      <div class="card-title">Services</div>
-      <div id="services-grid" class="services-grid"></div>
-    </section>
-    <section id="card-activity" class="card card-wide">
-      <div class="card-head">
-        <div class="card-title">Activity Feed</div>
-      </div>
-      <div id="activity-list" class="activity-list">Loading...</div>
-    </section>
+        <div id="activity-list" class="activity-list">Loading...</div>
+      </section>
+    </div>
   </main>
   <dialog id="service-dialog" class="service-dialog">
     <form method="dialog" class="service-dialog-panel">

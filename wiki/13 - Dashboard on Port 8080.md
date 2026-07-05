@@ -46,13 +46,15 @@ Set:
 ```sh
 export N20_DASHBOARD_HOST=192.168.1.50
 export N20_DASHBOARD_PORT=8080
-export N20_DASHBOARD_PROBE_HOST=127.0.0.1
+export N20_DASHBOARD_PROBE_HOST="$N20_DASHBOARD_HOST"
 export N20_DASHBOARD_PUBLIC_NAME=android-media.local
+export N20_DASHBOARD_SAMBA_SERVICE=smbd-android
 ```
 
-`N20_DASHBOARD_HOST` is the phone's real LAN IP. `N20_DASHBOARD_PROBE_HOST` can
-usually stay `127.0.0.1` because the dashboard checks services from the phone
-itself.
+`N20_DASHBOARD_HOST` is the phone's real LAN IP. Use the same value for
+`N20_DASHBOARD_PROBE_HOST` when services bind to the LAN address instead of
+loopback. Set `N20_DASHBOARD_SAMBA_SERVICE` to the actual runit service name for
+Samba.
 
 ## Enable The Service
 
@@ -80,6 +82,7 @@ The dashboard can show:
 
 - service reachability
 - runit service state
+- private Tailscale access state
 - memory
 - swap
 - CPU frequency basics
@@ -89,6 +92,31 @@ The dashboard can show:
 
 It may also show battery or Wi-Fi details if Termux:API is installed and
 responds quickly.
+
+## Tailscale Status
+
+If [[16 - Private Tailscale Access]] is installed, the dashboard shows a compact
+Tailscale status in the top strip and in a separate Tailscale section inside the
+Network card:
+
+- backend state
+- MagicDNS name
+- Tailscale IPv4 address
+- peer counts
+- DERP home region
+- private Serve port list
+
+The dashboard reads:
+
+```sh
+tailscale status --json
+tailscale serve status --json
+```
+
+The API returns only a filtered local summary. It does not pass through account
+emails, peer hostnames, public keys, auth URLs, or raw Tailscale peer objects.
+If the Tailscale CLI is installed but the daemon is down, the dashboard marks
+the access layer unavailable.
 
 ## Limits
 
