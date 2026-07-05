@@ -13,6 +13,13 @@ client compatibility.
 - Termux services: https://github.com/termux/termux-services
 - Termux:API: https://github.com/termux/termux-api
 
+## Private Access
+
+- Tailscale packages: https://pkgs.tailscale.com/stable/
+- Tailscale source: https://github.com/tailscale/tailscale
+- Tailscale userspace networking: https://tailscale.com/docs/concepts/userspace-networking
+- Tailscale daemon flags: https://tailscale.com/docs/reference/tailscaled
+
 ## Media Apps
 
 - Jellyfin networking: https://jellyfin.org/docs/general/post-install/networking/

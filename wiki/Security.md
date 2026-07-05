@@ -14,6 +14,10 @@ address such as:
 Remote access is a separate topic. A VPN-first setup fits this design best
 because it keeps the service configuration the same on the phone.
 
+For private remote access, use [[16 - Private Tailscale Access]]. Keep it as a
+device-to-device overlay. Do not add router forwarding, Funnel, public reverse
+proxies, exit-node behavior, or subnet-route advertisement for the media server.
+
 ## Passwords And Secrets
 
 Keep these out of GitHub:
@@ -24,6 +28,7 @@ Keep these out of GitHub:
 - Audiobookshelf admin credentials
 - SSH private keys
 - API tokens
+- Tailscale state files and reusable enrollment secrets
 - app databases
 
 Use placeholders in docs:

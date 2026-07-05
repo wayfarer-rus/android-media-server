@@ -58,6 +58,31 @@ must tolerate that.
 
 The media server should not require Termux:API.
 
+## Native Tailscale Needs Userspace Networking
+
+Termux does not normally have Android VPNService privileges. On a non-rooted
+phone, `/dev/net/tun` may exist but still return `Permission denied`.
+
+Native `tailscaled` therefore uses userspace networking. Generic Linux ARM64
+Tailscale binaries can also hit Android syscall restrictions. If that happens,
+build an Android/arm64 binary from upstream source and keep the runit service
+small, supervised, and easy to roll back.
+
+Userspace networking may not provide direct inbound access to every existing
+LAN-bound service. Test direct private URLs first, then use private
+`tailscale serve` only for explicit ports if direct access is blocked. Do not
+enable Funnel.
+
+Some Tailscale diagnostic commands may still try Android-restricted route or
+netlink probes from the CLI. If `tailscale status` and the service log show the
+node running but `tailscale netcheck` fails with a route permission error, treat
+that as a Termux CLI limitation and verify peer connectivity from a trusted
+client instead.
+
+If SSH should stay LAN-only, keep the SSH allow rules scoped to the LAN and do
+not document a Tailscale SSH command. Private media access and private shell
+administration do not have to share the same exposure policy.
+
 ## Audiobookshelf Is The Hardest Service
 
 Native Node builds on Android can be fragile.

@@ -19,6 +19,7 @@
 - [[13 - Dashboard on Port 8080]]
 - [[14 - Daily Operations]]
 - [[15 - Watchdog and Recovery]]
+- [[16 - Private Tailscale Access]]
 
 ## Reference
 
