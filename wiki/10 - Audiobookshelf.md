@@ -28,6 +28,20 @@ Recommended:
 Audiobookshelf supports its own library setup in the web UI. Keep the physical
 folders simple first.
 
+For one book split across multiple discs, keep the disc folders directly under
+the book folder and name them with Audiobookshelf's disc pattern:
+
+```text
+Audiobooks/
+  Example Book/
+    Disk 1/
+    Disk 2/
+```
+
+`Disc 1`, `CD 1`, and `Disk 1` style names are parsed as disc folders.
+Arbitrary names such as `1`, `part1`, or descriptive chapter folders can be
+indexed as separate books instead of discs.
+
 ## Native Termux Reality
 
 Audiobookshelf is a Node application. Native builds on Android/Termux can work,
