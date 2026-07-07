@@ -20,6 +20,13 @@ The public hostname is intentionally an example. Set
 Set `N20_DASHBOARD_SAMBA_SERVICE` if your Samba runit service has a local name
 other than `smbd-android`.
 
+Service Open links are host-dependent. The API returns each HTTP service's port
+and path, and the browser builds links from the hostname used to open the
+dashboard. For example, `http://android-media.local:8080/` links to
+`http://android-media.local:<service-port>/`, while a private DNS name such as
+`http://android-media-nas.<tailnet>.ts.net:8080/` links to the same private DNS
+host on each service port.
+
 ## Directory layout
 
 ```

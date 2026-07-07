@@ -185,14 +185,14 @@ def _sv_status(svc):
     return "unknown"
 
 SVC_DEF = [
-    {"id":"filebrowser","title":"FileBrowser Quantum","port":8088,"svc":"filebrowser-quantum","kind":"http","url":"http://%s:8088/" % MDNS},
-    {"id":"audiobookshelf","title":"Audiobooks","port":13378,"svc":"audiobookshelf","kind":"http","url":"http://%s:13378/audiobookshelf/" % MDNS},
-    {"id":"navidrome","title":"Music Jukebox","port":4533,"svc":"navidrome","kind":"http","url":"http://%s:4533/app/" % MDNS},
-    {"id":"jellyfin","title":"Jellyfin","port":8096,"svc":"jellyfin","kind":"http","url":"http://%s:8096/" % MDNS},
-    {"id":"samba","title":"Samba","port":1445,"svc":SAMBA_SERVICE,"kind":"tcp","url":None},
-    {"id":"ssh","title":"SSH","port":8022,"svc":"sshd","kind":"tcp","url":None},
-    {"id":"home-dashboard","title":"Home Dashboard","port":8080,"svc":"n20-home-dashboard","kind":"http","url":"http://%s:8080/" % MDNS},
-    {"id":"local-llm","title":"Local LLM","port":11434,"svc":None,"kind":"tcp","url":None},
+    {"id":"filebrowser","title":"FileBrowser Quantum","port":8088,"svc":"filebrowser-quantum","kind":"http","path":"/"},
+    {"id":"audiobookshelf","title":"Audiobooks","port":13378,"svc":"audiobookshelf","kind":"http","path":"/audiobookshelf/"},
+    {"id":"navidrome","title":"Music Jukebox","port":4533,"svc":"navidrome","kind":"http","path":"/app/"},
+    {"id":"jellyfin","title":"Jellyfin","port":8096,"svc":"jellyfin","kind":"http","path":"/"},
+    {"id":"samba","title":"Samba","port":1445,"svc":SAMBA_SERVICE,"kind":"tcp"},
+    {"id":"ssh","title":"SSH","port":8022,"svc":"sshd","kind":"tcp"},
+    {"id":"home-dashboard","title":"Home Dashboard","port":8080,"svc":"n20-home-dashboard","kind":"http","path":"/"},
+    {"id":"local-llm","title":"Local LLM","port":11434,"svc":None,"kind":"tcp"},
 ]
 
 def collect_supervisor():
@@ -224,8 +224,10 @@ def collect_services():
         status = "healthy" if reachable and sv=="up" else ("degraded" if reachable or sv=="up" else "unhealthy")
         if s["id"]=="local-llm" and not reachable:
             status = "not_running"
-        entry = {"id":s["id"],"title":s["title"],"status":status,"reachable":reachable,"supervisor":sv,"port":s["port"]}
-        if s["url"]: entry["url"] = s["url"]
+        entry = {"id":s["id"],"title":s["title"],"status":status,"reachable":reachable,"supervisor":sv,"port":s["port"],"kind":s["kind"]}
+        if s["kind"] == "http":
+            entry["scheme"] = s.get("scheme", "http")
+            entry["path"] = s.get("path", "/")
         result.append(entry)
     return result
 

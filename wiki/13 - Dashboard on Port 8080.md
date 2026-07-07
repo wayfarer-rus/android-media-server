@@ -56,6 +56,14 @@ export N20_DASHBOARD_SAMBA_SERVICE=smbd-android
 loopback. Set `N20_DASHBOARD_SAMBA_SERVICE` to the actual runit service name for
 Samba.
 
+`N20_DASHBOARD_PUBLIC_NAME` is used as display/default host metadata. The
+dashboard's Open links do not hard-code it. They are built in the browser from
+the hostname used to open the dashboard, plus each service's port and path. If
+you open the dashboard as `http://android-media.local:8080/`, service links keep
+`android-media.local`. If you open it through a private DNS name such as
+`http://android-media-nas.<tailnet>.ts.net:8080/`, service links keep that
+private DNS hostname.
+
 ## Enable The Service
 
 ```sh

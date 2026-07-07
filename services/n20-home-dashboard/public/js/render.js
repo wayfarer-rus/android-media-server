@@ -261,10 +261,30 @@ function serviceSub(s) {
 }
 
 function serviceAction(s) {
-  if (s.url) {
-    return '<a class="service-open" href="'+esc(s.url)+'" target="_blank" rel="noopener">Open \u2197</a>';
+  const url = serviceUrl(s);
+  if (url) {
+    return '<a class="service-open" href="'+esc(url)+'" target="_blank" rel="noopener">Open \u2197</a>';
   }
   return '<button type="button" class="service-open service-setup" data-service="'+esc(s.id)+'">Setup</button>';
+}
+
+function serviceUrl(s) {
+  if (s.kind === "http" && s.port) {
+    const path = String(s.path || "/");
+    try {
+      const u = new URL(window.location.href);
+      u.protocol = (s.scheme || "http") + ":";
+      u.hostname = window.location.hostname;
+      u.port = String(s.port);
+      u.pathname = path.charAt(0) === "/" ? path : "/" + path;
+      u.search = "";
+      u.hash = "";
+      return u.toString();
+    } catch (e) {
+      return "";
+    }
+  }
+  return s.url || "";
 }
 
 function serviceLabel(status) {

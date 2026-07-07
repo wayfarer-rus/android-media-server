@@ -408,6 +408,9 @@ http://android-media-nas.<tailnet>.ts.net:13378/audiobookshelf/
 http://android-media-nas.<tailnet>.ts.net:4533/app/
 ```
 
+When the dashboard is opened through the MagicDNS hostname, its service Open
+links keep that same hostname and swap only the service port/path.
+
 Direct services that already accept Tailscale traffic, such as Jellyfin or SMB
 on some builds, can stay direct and do not need Serve.
 
