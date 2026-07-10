@@ -1,0 +1,1293 @@
+#!/usr/bin/env python3
+"""Repair helper for the Note 20 Navidrome music library.
+
+The script is intentionally conservative:
+
+* It writes manifests before/while making media-library changes.
+* It does not overwrite existing cover/folder/front images.
+* It fixes text only when the encoding repair is high-confidence.
+* It renames only obvious UTF-8 mojibake filenames, not generic accented text.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import difflib
+import json
+import os
+import re
+import shutil
+import sqlite3
+import sys
+import time
+import unicodedata
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Any, Iterable
+
+
+AUDIO_EXTS = {
+    ".aa",
+    ".ape",
+    ".flac",
+    ".m4a",
+    ".m4b",
+    ".mp3",
+    ".wav",
+    ".wma",
+}
+
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
+STANDARD_COVER_RE = re.compile(r"^(cover|folder|front)\.[^.]+$", re.I)
+UTF8_MOJIBAKE_MARKERS = ("Ã", "Â", "Ð", "Ñ", "â€", "â€™", "â€œ", "â€�", "\ufffd")
+RUSSIAN_CHARS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
+RUSSIAN_CHARS |= set(" .,_-+&/()[]{}'\"`:;!?@#$%^=~")
+RUSSIAN_CHARS |= set(chr(c) for c in range(ord("А"), ord("я") + 1))
+RUSSIAN_CHARS |= {"Ё", "ё"}
+UNKNOWN_ALBUMS = {"", "[unknown album]", "unknown album", "unknown"}
+UNKNOWN_ARTISTS = {"", "[unknown artist]", "unknown artist", "unknown"}
+USER_AGENT = "note20-navidrome-library-repair/1.1 (https://github.com/openai/codex)"
+VARIOUS_ARTISTS = {"various artists", "va", "various", "различные исполнители"}
+
+
+def now_stamp() -> str:
+    return dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def open_manifest(work_dir: Path, label: str):
+    work_dir.mkdir(parents=True, exist_ok=True)
+    path = work_dir / f"{now_stamp()}-{label}.jsonl"
+    return path, path.open("w", encoding="utf-8")
+
+
+def write_record(handle, record: dict[str, Any]) -> None:
+    handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+    handle.flush()
+
+
+def sqlite_ro(db_path: Path) -> sqlite3.Connection:
+    return sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+
+
+def rel_to_actual(music_root: Path, rel_path: str) -> Path:
+    return music_root / rel_path
+
+
+def rel_to_view(view_root: Path, rel_path: str) -> Path:
+    return view_root / rel_path
+
+
+def existing_path(music_root: Path, view_root: Path, rel_path: str) -> Path | None:
+    direct = rel_to_actual(music_root, rel_path)
+    if direct.exists():
+        return direct
+    via_view = rel_to_view(view_root, rel_path)
+    if via_view.exists():
+        return via_view
+    return None
+
+
+def bad_utf8_score(text: str) -> int:
+    score = text.count("\ufffd") * 8
+    for marker in UTF8_MOJIBAKE_MARKERS:
+        score += text.count(marker) * 4
+    score += sum(1 for ch in text if "\x80" <= ch <= "\x9f") * 4
+    return score
+
+
+def repair_utf8_mojibake(text: str) -> tuple[str, str] | None:
+    if not text or bad_utf8_score(text) == 0:
+        return None
+    candidates: list[tuple[int, str, str]] = []
+    for enc in ("latin1", "cp1252"):
+        try:
+            fixed = text.encode(enc).decode("utf-8")
+        except UnicodeError:
+            continue
+        if fixed != text:
+            candidates.append((bad_utf8_score(fixed), f"{enc}->utf-8", fixed))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda row: row[0])
+    new_score, method, fixed = candidates[0]
+    if new_score + 4 < bad_utf8_score(text):
+        return method, fixed
+    return None
+
+
+def russian_run_len(text: str) -> int:
+    best = 0
+    cur = 0
+    for ch in text:
+        if ("А" <= ch <= "я") or ch in {"Ё", "ё"}:
+            cur += 1
+            best = max(best, cur)
+        else:
+            cur = 0
+    return best
+
+
+def invalid_russian_mix_count(text: str) -> int:
+    return sum(1 for ch in text if ch not in RUSSIAN_CHARS and not ch.isspace())
+
+
+def repair_cp1251_latin1(text: str) -> tuple[str, str] | None:
+    if not text:
+        return None
+    high_latin = sum(1 for ch in text if "\u00c0" <= ch <= "\u00ff")
+    if high_latin < 3:
+        return None
+    try:
+        fixed = text.encode("latin1").decode("cp1251")
+    except UnicodeError:
+        return None
+    if fixed == text:
+        return None
+    if invalid_russian_mix_count(fixed) != 0:
+        return None
+    if russian_run_len(fixed) < 3:
+        return None
+    return "latin1->cp1251", fixed
+
+
+def repair_text(text: str) -> tuple[str, str] | None:
+    utf8 = repair_utf8_mojibake(text)
+    if utf8:
+        return utf8
+    return repair_cp1251_latin1(text)
+
+
+def repair_filename(text: str) -> tuple[str, str] | None:
+    # Filename repair is stricter: only obvious UTF-8 mojibake is renamed.
+    return repair_utf8_mojibake(text)
+
+
+def standard_cover_exists(folder: Path) -> bool:
+    if not folder.is_dir():
+        return False
+    try:
+        for item in folder.iterdir():
+            if item.is_file() and STANDARD_COVER_RE.match(item.name):
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def target_cover_path(folder: Path, source_name: str) -> Path:
+    ext = Path(source_name).suffix.lower()
+    if ext == ".jpeg":
+        ext = ".jpg"
+    if ext not in IMAGE_EXTS:
+        ext = ".jpg"
+    return folder / f"cover{ext}"
+
+
+def image_score(name: str, album_name: str) -> int:
+    low = name.lower()
+    stem = Path(low).stem
+    score = 0
+    if re.search(r"\b(front|frt|cover|folder|albumart)\b", stem):
+        score += 60
+    if "front" in stem or "frt" in stem:
+        score += 25
+    if "cover" in stem:
+        score += 20
+    if re.search(r"\b(back|rear|tray|inside|booklet|inlay|scan|cd|disc|disk)\b", stem):
+        score -= 45
+    if re.search(r"\b(small|thumb|thumbnail)\b", stem):
+        score -= 20
+    album_tokens = {
+        t
+        for t in re.split(r"[^a-z0-9]+", normalize_for_match(album_name))
+        if len(t) >= 4
+    }
+    image_tokens = set(re.split(r"[^a-z0-9]+", normalize_for_match(stem)))
+    score += min(20, 5 * len(album_tokens & image_tokens))
+    ext = Path(low).suffix
+    if ext in {".jpg", ".jpeg"}:
+        score += 8
+    elif ext in {".png", ".webp"}:
+        score += 5
+    return score
+
+
+def pick_local_image(folder: Path, image_names: list[str], album_name: str) -> Path | None:
+    candidates: list[tuple[int, Path]] = []
+    for name in image_names:
+        path = folder / name
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTS:
+            candidates.append((image_score(path.name, album_name), path))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda row: (row[0], -len(row[1].name)), reverse=True)
+    best_score, best = candidates[0]
+    if best_score >= 20:
+        return best
+    # A lone image in a well-named album folder is usually a cover even when the
+    # image file itself is named cryptically. A lone image in an artist folder
+    # can easily be for a different album, so require the folder name match.
+    if len(candidates) == 1 and best_score >= 0 and similarity(album_name, folder.name) >= 0.55:
+        return best
+    return None
+
+
+def albums_missing_art(con: sqlite3.Connection) -> list[dict[str, Any]]:
+    con.row_factory = sqlite3.Row
+    rows = con.execute(
+        """
+        select id, name, album_artist, folder_ids
+        from album
+        where missing = 0
+          and nullif(embed_art_path, '') is null
+          and coalesce(nullif(small_image_url, ''), nullif(medium_image_url, ''), nullif(large_image_url, '')) is null
+        order by album_artist, name
+        """
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def folder_map(con: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+    con.row_factory = sqlite3.Row
+    return {
+        row["id"]: dict(row)
+        for row in con.execute("select id, path, name, image_files from folder where missing = 0")
+    }
+
+
+def folder_rel_path(folder_row: dict[str, Any]) -> str:
+    parent = str(folder_row.get("path") or "")
+    name = str(folder_row.get("name") or "")
+    if parent and name:
+        return f"{parent}/{name}"
+    return parent or name
+
+
+def parse_folder_ids(value: str | None) -> list[str]:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return [str(x) for x in parsed if isinstance(x, str)]
+
+
+def parse_image_files(value: str | None) -> list[str]:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return [str(x) for x in parsed if isinstance(x, str)]
+
+
+def apply_local_covers(args: argparse.Namespace) -> dict[str, int]:
+    con = sqlite_ro(args.db)
+    folders = folder_map(con)
+    summary = {"albums_seen": 0, "copied": 0, "skipped": 0, "errors": 0}
+    manifest_path, manifest = open_manifest(args.work_dir, "local-covers")
+    print(f"manifest={manifest_path}")
+    with manifest:
+        for album in albums_missing_art(con):
+            summary["albums_seen"] += 1
+            if normalize_for_match(str(album.get("name") or "")) in UNKNOWN_ALBUMS:
+                summary["skipped"] += 1
+                continue
+            copied_for_album = False
+            for folder_id in parse_folder_ids(album.get("folder_ids")):
+                folder_row = folders.get(folder_id)
+                if not folder_row:
+                    continue
+                rel = folder_rel_path(folder_row)
+                folder = rel_to_actual(args.music_root, rel)
+                if not folder.is_dir():
+                    continue
+                if standard_cover_exists(folder):
+                    summary["skipped"] += 1
+                    copied_for_album = True
+                    break
+                image_names = parse_image_files(folder_row.get("image_files"))
+                source = pick_local_image(folder, image_names, album["name"])
+                if not source:
+                    continue
+                target = target_cover_path(folder, source.name)
+                if target.exists():
+                    summary["skipped"] += 1
+                    copied_for_album = True
+                    break
+                record = {
+                    "action": "copy_local_cover",
+                    "album": album["name"],
+                    "album_artist": album["album_artist"],
+                    "folder": str(folder),
+                    "source": source.name,
+                    "target": target.name,
+                    "dry_run": args.dry_run,
+                }
+                try:
+                    if not args.dry_run:
+                        shutil.copyfile(source, target)
+                    summary["copied"] += 1
+                    copied_for_album = True
+                    write_record(manifest, record)
+                except OSError as exc:
+                    record["error"] = str(exc)
+                    summary["errors"] += 1
+                    write_record(manifest, record)
+                break
+            if not copied_for_album:
+                summary["skipped"] += 1
+    print(json.dumps(summary, sort_keys=True))
+    return summary
+
+
+def normalize_for_match(text: str) -> str:
+    fixed = repair_text(text)
+    if fixed:
+        text = fixed[1]
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.lower()
+    text = re.sub(r"\[[^\]]*\]|\([^)]*(?:kbps|flac|mp3|tracks|remaster|deluxe|expanded|explicit)[^)]*\)", " ", text)
+    text = re.sub(r"[^a-z0-9а-яё]+", " ", text)
+    text = re.sub(r"\b(the|a|an)\b", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def similarity(a: str, b: str) -> float:
+    na = normalize_for_match(a)
+    nb = normalize_for_match(b)
+    if not na or not nb:
+        return 0.0
+    return difflib.SequenceMatcher(None, na, nb).ratio()
+
+
+def match_tokens(text: str) -> set[str]:
+    return {token for token in normalize_for_match(text).split() if len(token) >= 3}
+
+
+def is_various_artist(artist: str, album: str = "") -> bool:
+    artist_norm = normalize_for_match(artist)
+    album_norm = normalize_for_match(album)
+    return artist_norm in VARIOUS_ARTISTS or "soundtrack" in album_norm or "ost" in album_norm
+
+
+def folder_album_confidence(album: str, artist: str, folder: Path) -> float:
+    album_norm = normalize_for_match(album)
+    artist_norm = normalize_for_match(artist)
+    folder_norm = normalize_for_match(folder.name)
+    if not album_norm or folder_norm in {"", "."}:
+        return 0.0
+
+    simplified = re.sub(r"\b(19|20)\d{2}\b", " ", folder_norm)
+    simplified = re.sub(r"^\d+\s+", " ", simplified)
+    simplified = re.sub(r"\s+", " ", simplified).strip()
+    if artist_norm:
+        simplified = re.sub(rf"\b{re.escape(artist_norm)}\b", " ", simplified).strip()
+        simplified = re.sub(r"\s+", " ", simplified).strip()
+
+    candidates = {folder_norm, simplified}
+    for candidate in list(candidates):
+        candidates.add(candidate.replace(" ep", "").replace(" single", "").strip())
+
+    best = max(similarity(album_norm, candidate) for candidate in candidates if candidate)
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if album_norm == candidate:
+            best = max(best, 1.0)
+        elif len(album_norm) >= 5 and album_norm in candidate:
+            best = max(best, 0.95)
+
+    album_tokens = match_tokens(album_norm)
+    folder_tokens = match_tokens(folder_norm)
+    if album_tokens and album_tokens <= folder_tokens:
+        best = max(best, 0.88)
+
+    # Very short one-word albums need folder evidence stronger than a random
+    # artist directory. They still pass when the folder is named for the album.
+    if len(album_norm) <= 4 and album_norm not in folder_norm:
+        best = min(best, 0.4)
+    return best
+
+
+def safe_album_artist(artist: str | None) -> str:
+    if not artist:
+        return ""
+    fixed = repair_text(artist)
+    return fixed[1] if fixed else artist
+
+
+def safe_album_name(album: str | None) -> str:
+    if not album:
+        return ""
+    fixed = repair_text(album)
+    return fixed[1] if fixed else album
+
+
+def http_json(url: str, timeout: int = 20) -> dict[str, Any]:
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        return json.load(response)
+
+
+def itunes_search(album: str, artist: str, country: str) -> list[dict[str, Any]]:
+    term = f"{artist} {album}".strip()
+    params = urllib.parse.urlencode(
+        {
+            "term": term,
+            "entity": "album",
+            "media": "music",
+            "limit": "8",
+            "country": country,
+        }
+    )
+    url = "https://itunes.apple.com/search?" + params
+    data = http_json(url)
+    return list(data.get("results", []))
+
+
+def artwork_600(url: str) -> str:
+    return re.sub(r"/[0-9]+x[0-9]+bb\.(jpg|png|webp)$", r"/600x600bb.\1", url)
+
+
+def choose_itunes_match(album: str, artist: str, rows: list[dict[str, Any]]) -> tuple[dict[str, Any], float] | None:
+    artist_norm = normalize_for_match(artist)
+    is_various = is_various_artist(artist, album)
+    best: tuple[dict[str, Any], float, float, float] | None = None
+    for row in rows:
+        candidate_album = str(row.get("collectionName") or "")
+        candidate_artist = str(row.get("artistName") or "")
+        art = str(row.get("artworkUrl100") or "")
+        if not candidate_album or not art:
+            continue
+        album_ratio = similarity(album, candidate_album)
+        artist_ratio = similarity(artist, candidate_artist) if artist else 0.0
+        if is_various:
+            score = album_ratio * 0.85 + artist_ratio * 0.15
+            ok = album_ratio >= 0.9
+        elif not artist_norm:
+            score = album_ratio
+            ok = album_ratio >= 0.94
+        else:
+            score = album_ratio * 0.68 + artist_ratio * 0.32
+            ok = album_ratio >= 0.84 and artist_ratio >= 0.68
+        if not ok:
+            continue
+        if best is None or score > best[1]:
+            best = (row, score, album_ratio, artist_ratio)
+    if best is None:
+        return None
+    return best[0], best[1]
+
+
+def deezer_search(album: str, artist: str) -> list[dict[str, Any]]:
+    term = f'artist:"{artist}" album:"{album}"' if artist else f'album:"{album}"'
+    url = "https://api.deezer.com/search/album?" + urllib.parse.urlencode({"q": term, "limit": "10"})
+    data = http_json(url)
+    return list(data.get("data", []))
+
+
+def choose_deezer_match(album: str, artist: str, rows: list[dict[str, Any]]) -> tuple[dict[str, Any], float] | None:
+    best: tuple[dict[str, Any], float] | None = None
+    artist_norm = normalize_for_match(artist)
+    for row in rows:
+        candidate_album = str(row.get("title") or "")
+        candidate_artist = str((row.get("artist") or {}).get("name") or "")
+        art = str(row.get("cover_xl") or row.get("cover_big") or row.get("cover_medium") or "")
+        if not candidate_album or not art:
+            continue
+        album_ratio = similarity(album, candidate_album)
+        artist_ratio = similarity(artist, candidate_artist) if artist else 0.0
+        if is_various_artist(artist, album):
+            ok = album_ratio >= 0.90
+            score = album_ratio
+        elif not artist_norm:
+            ok = album_ratio >= 0.94
+            score = album_ratio
+        else:
+            ok = album_ratio >= 0.86 and artist_ratio >= 0.70
+            score = album_ratio * 0.70 + artist_ratio * 0.30
+        if ok and (best is None or score > best[1]):
+            best = (row, score)
+    return best
+
+
+def musicbrainz_release_group_search(album: str, artist: str) -> list[dict[str, Any]]:
+    parts = [f'releasegroup:"{album}"']
+    if artist:
+        parts.append(f'artist:"{artist}"')
+    query = " AND ".join(parts)
+    url = "https://musicbrainz.org/ws/2/release-group/?" + urllib.parse.urlencode(
+        {"query": query, "fmt": "json", "limit": "8"}
+    )
+    data = http_json(url)
+    return list(data.get("release-groups", []))
+
+
+def musicbrainz_release_search(album: str, artist: str) -> list[dict[str, Any]]:
+    parts = [f'release:"{album}"']
+    if artist:
+        parts.append(f'artist:"{artist}"')
+    query = " AND ".join(parts)
+    url = "https://musicbrainz.org/ws/2/release/?" + urllib.parse.urlencode(
+        {"query": query, "fmt": "json", "limit": "12"}
+    )
+    data = http_json(url)
+    return list(data.get("releases", []))
+
+
+def musicbrainz_artist_credit(row: dict[str, Any]) -> str:
+    credit = row.get("artist-credit") or []
+    names: list[str] = []
+    for item in credit:
+        if isinstance(item, dict):
+            artist = item.get("artist") or {}
+            names.append(str(artist.get("name") or item.get("name") or ""))
+        elif isinstance(item, str):
+            names.append(item)
+    return " ".join(name for name in names if name).strip()
+
+
+def choose_musicbrainz_match(album: str, artist: str, rows: list[dict[str, Any]]) -> tuple[dict[str, Any], float] | None:
+    best: tuple[dict[str, Any], float] | None = None
+    artist_norm = normalize_for_match(artist)
+    for row in rows:
+        candidate_album = str(row.get("title") or "")
+        candidate_artist = musicbrainz_artist_credit(row)
+        if not candidate_album:
+            continue
+        album_ratio = similarity(album, candidate_album)
+        artist_ratio = similarity(artist, candidate_artist) if artist else 0.0
+        if is_various_artist(artist, album):
+            ok = album_ratio >= 0.90
+            score = album_ratio
+        elif not artist_norm:
+            ok = album_ratio >= 0.94
+            score = album_ratio
+        else:
+            ok = album_ratio >= 0.86 and artist_ratio >= 0.68
+            score = album_ratio * 0.70 + artist_ratio * 0.30
+        if ok and (best is None or score > best[1]):
+            best = (row, score)
+    return best
+
+
+def cover_art_archive_url(kind: str, mbid: str) -> str:
+    return f"https://coverartarchive.org/{kind}/{mbid}/front-500"
+
+
+def probe_image_url(url: str, timeout: int = 20) -> bool:
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            data = response.read(32)
+        return (
+            data.startswith(b"\xff\xd8\xff")
+            or data.startswith(b"\x89PNG\r\n\x1a\n")
+            or data.startswith(b"RIFF")
+            or data.startswith(b"GIF8")
+        )
+    except (urllib.error.URLError, TimeoutError, ValueError):
+        return False
+
+
+def download_image(url: str, target: Path) -> int:
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=30) as response:
+        data = response.read(8 * 1024 * 1024)
+    if len(data) < 128:
+        raise ValueError("image response too small")
+    if not (
+        data.startswith(b"\xff\xd8\xff")
+        or data.startswith(b"\x89PNG\r\n\x1a\n")
+        or data.startswith(b"RIFF")
+        or data.startswith(b"GIF8")
+    ):
+        raise ValueError("image response does not look like an image")
+    target.write_bytes(data)
+    return len(data)
+
+
+def iter_album_folders(
+    album: dict[str, Any],
+    folders: dict[str, dict[str, Any]],
+    music_root: Path,
+) -> Iterable[Path]:
+    for folder_id in parse_folder_ids(album.get("folder_ids")):
+        row = folders.get(folder_id)
+        if not row:
+            continue
+        folder = rel_to_actual(music_root, folder_rel_path(row))
+        if folder.is_dir():
+            yield folder
+
+
+def online_cover_match(
+    album_name: str,
+    artist_name: str,
+    sources: list[str],
+    countries: list[str],
+    args: argparse.Namespace,
+) -> tuple[dict[str, Any] | None, str, str]:
+    match: dict[str, Any] | None = None
+    source_name = ""
+    last_error = ""
+    if "musicbrainz" in sources:
+        try:
+            rows = musicbrainz_release_group_search(album_name, artist_name)
+            mb_match = choose_musicbrainz_match(album_name, artist_name, rows)
+            if mb_match:
+                row, score = mb_match
+                mbid = str(row.get("id") or "")
+                if mbid:
+                    image_url = cover_art_archive_url("release-group", mbid)
+                    if probe_image_url(image_url):
+                        match = {
+                            "source": "musicbrainz-cover-art-archive",
+                            "source_artist": musicbrainz_artist_credit(row),
+                            "source_album": row.get("title"),
+                            "source_url": image_url,
+                            "score": score,
+                        }
+                        source_name = "musicbrainz-cover-art-archive"
+            if match is None:
+                rows = musicbrainz_release_search(album_name, artist_name)
+                mb_release = choose_musicbrainz_match(album_name, artist_name, rows)
+                if mb_release:
+                    row, score = mb_release
+                    mbid = str(row.get("id") or "")
+                    if mbid:
+                        image_url = cover_art_archive_url("release", mbid)
+                        if probe_image_url(image_url):
+                            match = {
+                                "source": "musicbrainz-release-cover-art-archive",
+                                "source_artist": musicbrainz_artist_credit(row),
+                                "source_album": row.get("title"),
+                                "source_url": image_url,
+                                "score": score,
+                            }
+                            source_name = "musicbrainz-release-cover-art-archive"
+        except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+            last_error = str(exc)
+        time.sleep(args.musicbrainz_delay)
+    if match is None and "deezer" in sources:
+        try:
+            rows = deezer_search(album_name, artist_name)
+            dz_match = choose_deezer_match(album_name, artist_name, rows)
+            if dz_match:
+                row, score = dz_match
+                match = {
+                    "source": "deezer",
+                    "source_artist": (row.get("artist") or {}).get("name"),
+                    "source_album": row.get("title"),
+                    "source_url": row.get("cover_xl") or row.get("cover_big") or row.get("cover_medium"),
+                    "score": score,
+                }
+                source_name = "deezer"
+        except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+            last_error = str(exc)
+        time.sleep(args.online_delay)
+    if match is None and "itunes" in sources:
+        for country in countries:
+            try:
+                rows = itunes_search(album_name, artist_name, country)
+                it_match = choose_itunes_match(album_name, artist_name, rows)
+            except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+                last_error = str(exc)
+                it_match = None
+            if it_match:
+                row, score = it_match
+                match = {
+                    "source": "itunes",
+                    "source_artist": row.get("artistName"),
+                    "source_album": row.get("collectionName"),
+                    "source_url": artwork_600(str(row.get("artworkUrl100"))),
+                    "score": score,
+                }
+                source_name = "itunes"
+                break
+            time.sleep(args.online_delay)
+    return match, source_name, last_error
+
+
+def cleanup_folder_title(name: str) -> str:
+    text = repair_text(name)[1] if repair_text(name) else name
+    text = text.replace("_", " ")
+    text = re.sub(r"\b(?:cd|disc)\s*\d+\b", " ", text, flags=re.I)
+    text = re.sub(r"\b(?:mp3|flac|tracks?|kbps|vbr|cbr)\b", " ", text, flags=re.I)
+    text = re.sub(r"\[[^\]]*(?:mp3|flac|tracks?|kbps|vbr|cbr)[^\]]*\]", " ", text, flags=re.I)
+    text = re.sub(r"\((?:\d{3,4}\s*)?(?:kbps|mp3|flac|tracks?|vbr|cbr)[^)]*\)", " ", text, flags=re.I)
+    text = re.sub(r"^\s*\d+\s*[-._ ]+\s*", "", text)
+    text = re.sub(r"^\s*\(?((?:19|20)\d{2})\)?\s*[-._ ]+\s*", "", text)
+    text = re.sub(r"\s+", " ", text).strip(" -_.")
+    return text
+
+
+def split_folder_artist_album(folder: Path, fallback_artist: str) -> tuple[str, str]:
+    cleaned = cleanup_folder_title(folder.name)
+    parent = cleanup_folder_title(folder.parent.name)
+    m = re.match(r"^(?:\(?((?:19|20)\d{2})\)?\s*[-._ ]+)?(.+?)\s+-\s+(.+)$", cleaned)
+    if m:
+        left = cleanup_folder_title(m.group(2))
+        right = cleanup_folder_title(m.group(3))
+        if right and normalize_for_match(left) not in {"cd", "disc"}:
+            return left, right
+    if " - " in cleaned:
+        left, right = [cleanup_folder_title(part) for part in cleaned.split(" - ", 1)]
+        if left and right:
+            return left, right
+    if parent and parent not in {"Albums", "!!!Albums", ".", "MUSIC"}:
+        return fallback_artist or parent, cleaned
+    return fallback_artist, cleaned
+
+
+def linked_albums_by_folder(con: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
+    con.row_factory = sqlite3.Row
+    by_folder: dict[str, list[dict[str, Any]]] = {}
+    for row in con.execute(
+        """
+        select id, name, album_artist, folder_ids, embed_art_path, small_image_url, medium_image_url, large_image_url
+        from album
+        where missing = 0
+        """
+    ):
+        album = dict(row)
+        for folder_id in parse_folder_ids(album.get("folder_ids")):
+            by_folder.setdefault(folder_id, []).append(album)
+    return by_folder
+
+
+def album_has_art_source(album: dict[str, Any], folders: dict[str, dict[str, Any]], music_root: Path) -> bool:
+    if any(album.get(key) for key in ("embed_art_path", "small_image_url", "medium_image_url", "large_image_url")):
+        return True
+    for folder_id in parse_folder_ids(album.get("folder_ids")):
+        row = folders.get(folder_id)
+        if not row:
+            continue
+        folder = rel_to_actual(music_root, folder_rel_path(row))
+        if standard_cover_exists(folder) or parse_image_files(row.get("image_files")):
+            return True
+    return False
+
+
+def folder_cover_candidate(
+    folder: Path,
+    albums: list[dict[str, Any]],
+) -> tuple[str, str, str] | None:
+    album_counts: dict[str, int] = {}
+    artist_counts: dict[str, int] = {}
+    for album in albums:
+        album_name = safe_album_name(album.get("name"))
+        artist_name = safe_album_artist(album.get("album_artist"))
+        if normalize_for_match(album_name) not in UNKNOWN_ALBUMS:
+            album_counts[album_name] = album_counts.get(album_name, 0) + 1
+        if normalize_for_match(artist_name) not in UNKNOWN_ARTISTS:
+            artist_counts[artist_name] = artist_counts.get(artist_name, 0) + 1
+    fallback_artist = max(artist_counts, key=artist_counts.get) if artist_counts else ""
+    folder_artist, folder_album = split_folder_artist_album(folder, fallback_artist)
+    folder_album_norm = normalize_for_match(folder_album)
+    if not folder_album_norm or folder_album_norm in UNKNOWN_ALBUMS:
+        return None
+    fallback_artist_norm = normalize_for_match(fallback_artist)
+    if fallback_artist_norm and folder_album_norm == fallback_artist_norm:
+        # An artist-only folder is not enough evidence for a self-titled album.
+        # These folders often contain loose tracks from several releases.
+        return None
+
+    if album_counts:
+        common_album = max(album_counts, key=album_counts.get)
+        common_count = album_counts[common_album]
+        if common_count >= 2 and similarity(common_album, folder_album) >= 0.55:
+            folder_album = common_album
+    if len(album_counts) > 1 and max(album_counts.values()) < max(2, len(albums) // 2):
+        folder_markers = normalize_for_match(" ".join(folder.parts[-3:]))
+        if not re.search(r"\b(ost|soundtrack|compilation|various|top|hits|fetenhits|ассa|фанк)\b", folder_markers):
+            return None
+    if len(album_counts) >= 4 and not is_various_artist(folder_artist, folder_album):
+        folder_artist = "Various Artists"
+    reason = f"folder:{folder.name}"
+    return folder_album, folder_artist, reason
+
+
+def fetch_folder_online_covers(args: argparse.Namespace) -> dict[str, int]:
+    con = sqlite_ro(args.db)
+    folders = folder_map(con)
+    albums_by_folder = linked_albums_by_folder(con)
+    summary = {"folders_seen": 0, "downloaded": 0, "skipped": 0, "no_match": 0, "errors": 0}
+    manifest_path, manifest = open_manifest(args.work_dir, "folder-online-covers")
+    print(f"manifest={manifest_path}")
+    countries = [c.strip().upper() for c in args.itunes_countries.split(",") if c.strip()]
+    sources = [s.strip().lower() for s in args.online_sources.split(",") if s.strip()]
+    planned_targets: set[str] = set()
+    folder_items = sorted(folders.items(), key=lambda item: folder_rel_path(item[1]).lower())
+    with manifest:
+        for folder_id, folder_row in folder_items:
+            if args.max_albums and summary["folders_seen"] >= args.max_albums:
+                break
+            if args.max_online and summary["downloaded"] >= args.max_online:
+                break
+            folder = rel_to_actual(args.music_root, folder_rel_path(folder_row))
+            linked_albums = albums_by_folder.get(folder_id, [])
+            no_art_albums = [
+                album
+                for album in linked_albums
+                if not album_has_art_source(album, folders, args.music_root)
+            ]
+            if not no_art_albums:
+                continue
+            summary["folders_seen"] += 1
+            if args.progress_every and summary["folders_seen"] % args.progress_every == 0:
+                print(
+                    "progress "
+                    + json.dumps(
+                        {
+                            "folders_seen": summary["folders_seen"],
+                            "downloaded": summary["downloaded"],
+                            "no_match": summary["no_match"],
+                            "skipped": summary["skipped"],
+                            "errors": summary["errors"],
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+            if not folder.is_dir() or standard_cover_exists(folder):
+                summary["skipped"] += 1
+                continue
+            candidate = folder_cover_candidate(folder, no_art_albums)
+            if not candidate:
+                summary["skipped"] += 1
+                continue
+            album_name, artist_name, reason = candidate
+            target = folder / "cover.jpg"
+            if target.exists() or str(target) in planned_targets:
+                summary["skipped"] += 1
+                continue
+            planned_targets.add(str(target))
+            match, source_name, last_error = online_cover_match(album_name, artist_name, sources, countries, args)
+            if not match:
+                summary["no_match"] += 1
+                if last_error:
+                    write_record(
+                        manifest,
+                        {
+                            "action": "folder_online_cover_no_match",
+                            "album": album_name,
+                            "album_artist": artist_name,
+                            "folder": str(folder),
+                            "error": last_error,
+                        },
+                    )
+                continue
+            image_url = str(match["source_url"])
+            record = {
+                "action": "download_folder_online_cover",
+                "album": album_name,
+                "album_artist": artist_name,
+                "folder": str(folder),
+                "target": target.name,
+                "source": source_name,
+                "source_artist": match.get("source_artist"),
+                "source_album": match.get("source_album"),
+                "source_url": image_url,
+                "score": round(float(match.get("score") or 0), 4),
+                "covered_album_rows": len(no_art_albums),
+                "candidate_reason": reason,
+                "dry_run": args.dry_run,
+            }
+            try:
+                if not args.dry_run:
+                    size = download_image(image_url, target)
+                    record["bytes"] = size
+                summary["downloaded"] += 1
+                write_record(manifest, record)
+            except (OSError, urllib.error.URLError, TimeoutError, ValueError) as exc:
+                record["error"] = str(exc)
+                summary["errors"] += 1
+                write_record(manifest, record)
+            time.sleep(args.online_delay)
+    print(json.dumps(summary, sort_keys=True))
+    return summary
+
+
+def fetch_online_covers(args: argparse.Namespace) -> dict[str, int]:
+    con = sqlite_ro(args.db)
+    folders = folder_map(con)
+    summary = {"albums_seen": 0, "downloaded": 0, "skipped": 0, "no_match": 0, "errors": 0}
+    manifest_path, manifest = open_manifest(args.work_dir, "online-covers")
+    print(f"manifest={manifest_path}")
+    countries = [c.strip().upper() for c in args.itunes_countries.split(",") if c.strip()]
+    sources = [s.strip().lower() for s in args.online_sources.split(",") if s.strip()]
+    planned_targets: set[str] = set()
+    with manifest:
+        for album in albums_missing_art(con):
+            if args.max_albums and summary["albums_seen"] >= args.max_albums:
+                break
+            if args.max_online and summary["downloaded"] >= args.max_online:
+                break
+            summary["albums_seen"] += 1
+            if args.progress_every and summary["albums_seen"] % args.progress_every == 0:
+                print(
+                    "progress "
+                    + json.dumps(
+                        {
+                            "albums_seen": summary["albums_seen"],
+                            "downloaded": summary["downloaded"],
+                            "no_match": summary["no_match"],
+                            "skipped": summary["skipped"],
+                            "errors": summary["errors"],
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+            album_name = safe_album_name(album.get("name"))
+            artist_name = safe_album_artist(album.get("album_artist"))
+            if normalize_for_match(album_name) in UNKNOWN_ALBUMS:
+                summary["skipped"] += 1
+                continue
+            if normalize_for_match(artist_name) in UNKNOWN_ARTISTS and not re.search("soundtrack|ost", normalize_for_match(album_name)):
+                summary["skipped"] += 1
+                continue
+            album_folders = list(iter_album_folders(album, folders, args.music_root))
+            folder = next(
+                (
+                    f
+                    for f in album_folders
+                    if not standard_cover_exists(f)
+                    and folder_album_confidence(album_name, artist_name, f) >= args.min_folder_confidence
+                ),
+                None,
+            )
+            if folder is None:
+                summary["skipped"] += 1
+                continue
+            target = folder / "cover.jpg"
+            if target.exists() or str(target) in planned_targets:
+                summary["skipped"] += 1
+                continue
+            planned_targets.add(str(target))
+            match, source_name, last_error = online_cover_match(album_name, artist_name, sources, countries, args)
+            if not match:
+                summary["no_match"] += 1
+                if last_error:
+                    write_record(
+                        manifest,
+                        {
+                            "action": "online_cover_no_match",
+                            "album": album_name,
+                            "album_artist": artist_name,
+                            "folder": str(folder),
+                            "error": last_error,
+                        },
+                    )
+                continue
+            image_url = str(match["source_url"])
+            record = {
+                "action": "download_online_cover",
+                "album": album_name,
+                "album_artist": artist_name,
+                "folder": str(folder),
+                "target": target.name,
+                "source": source_name,
+                "source_artist": match.get("source_artist"),
+                "source_album": match.get("source_album"),
+                "source_url": image_url,
+                "score": round(float(match.get("score") or 0), 4),
+                "folder_confidence": round(folder_album_confidence(album_name, artist_name, folder), 4),
+                "dry_run": args.dry_run,
+            }
+            try:
+                if not args.dry_run:
+                    size = download_image(image_url, target)
+                    record["bytes"] = size
+                summary["downloaded"] += 1
+                write_record(manifest, record)
+            except (OSError, urllib.error.URLError, TimeoutError, ValueError) as exc:
+                record["error"] = str(exc)
+                summary["errors"] += 1
+                write_record(manifest, record)
+            time.sleep(args.online_delay)
+    print(json.dumps(summary, sort_keys=True))
+    return summary
+
+
+def db_metadata_candidates(db_path: Path) -> list[tuple[str, dict[str, str]]]:
+    con = sqlite_ro(db_path)
+    con.row_factory = sqlite3.Row
+    cols = ["title", "artist", "album", "album_artist", "genre"]
+    rows: list[tuple[str, dict[str, str]]] = []
+    for row in con.execute(
+        "select path, title, artist, album, album_artist, genre from media_file where missing = 0 order by path"
+    ):
+        fixes: dict[str, str] = {}
+        for col in cols:
+            value = row[col]
+            fixed = repair_text(str(value or ""))
+            if fixed:
+                fixes[col] = fixed[1]
+        if fixes:
+            rows.append((str(row["path"]), fixes))
+    return rows
+
+
+def repair_tags(args: argparse.Namespace) -> dict[str, int]:
+    try:
+        import mutagen  # type: ignore
+    except ImportError:
+        print("mutagen is required for tag repair", file=sys.stderr)
+        return {"files_seen": 0, "files_changed": 0, "fields_changed": 0, "errors": 1}
+
+    keys = ["title", "artist", "album", "albumartist", "composer", "performer", "genre"]
+    summary = {"files_seen": 0, "files_changed": 0, "fields_changed": 0, "errors": 0, "unsupported": 0}
+    manifest_path, manifest = open_manifest(args.work_dir, "tag-repair")
+    print(f"manifest={manifest_path}")
+    with manifest:
+        for rel_path, _db_fixes in db_metadata_candidates(args.db):
+            path = existing_path(args.music_root, args.view_root, rel_path)
+            if path is None or path.suffix.lower() not in AUDIO_EXTS:
+                continue
+            summary["files_seen"] += 1
+            try:
+                audio = mutagen.File(path, easy=True)
+            except Exception as exc:
+                summary["errors"] += 1
+                write_record(manifest, {"action": "tag_read_error", "path": str(path), "error": str(exc)})
+                continue
+            if audio is None:
+                summary["unsupported"] += 1
+                continue
+            changes: dict[str, dict[str, Any]] = {}
+            for key in keys:
+                if key not in audio:
+                    continue
+                values = list(audio.get(key, []))
+                new_values: list[str] = []
+                changed = False
+                methods: list[str] = []
+                for value in values:
+                    fixed = repair_text(str(value))
+                    if fixed:
+                        method, new_value = fixed
+                        new_values.append(new_value)
+                        methods.append(method)
+                        changed = True
+                    else:
+                        new_values.append(str(value))
+                if changed:
+                    changes[key] = {"old": values, "new": new_values, "methods": methods}
+                    audio[key] = new_values
+            if not changes:
+                continue
+            record = {"action": "repair_tags", "path": str(path), "changes": changes, "dry_run": args.dry_run}
+            try:
+                if not args.dry_run:
+                    audio.save()
+                summary["files_changed"] += 1
+                summary["fields_changed"] += len(changes)
+                write_record(manifest, record)
+            except Exception as exc:
+                record["error"] = str(exc)
+                summary["errors"] += 1
+                write_record(manifest, record)
+    print(json.dumps(summary, sort_keys=True))
+    return summary
+
+
+def collect_filename_renames(music_root: Path) -> list[tuple[Path, Path, str]]:
+    actions: list[tuple[Path, Path, str]] = []
+    skip_dirs = {"Audiobooks", ".Spotlight-V100", ".Trashes", ".fseventsd"}
+    for root, dirs, files in os.walk(music_root):
+        root_path = Path(root)
+        rel_parts = root_path.relative_to(music_root).parts if root_path != music_root else ()
+        if rel_parts and rel_parts[0] == "Audiobooks":
+            dirs[:] = []
+            continue
+        dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith("._")]
+        for name in files:
+            if name.startswith("._"):
+                continue
+            fixed = repair_filename(name)
+            if not fixed:
+                continue
+            target = root_path / fixed[1]
+            actions.append((root_path / name, target, fixed[0]))
+        for name in dirs:
+            fixed = repair_filename(name)
+            if not fixed:
+                continue
+            target = root_path / fixed[1]
+            actions.append((root_path / name, target, fixed[0]))
+    # Rename files before parent directories; for directories, rename deepest first.
+    actions.sort(key=lambda row: (row[0].is_dir(), -len(row[0].parts)))
+    return actions
+
+
+def repair_filenames(args: argparse.Namespace) -> dict[str, int]:
+    actions = collect_filename_renames(args.music_root)
+    summary = {"planned": len(actions), "renamed": 0, "skipped": 0, "errors": 0}
+    manifest_path, manifest = open_manifest(args.work_dir, "filename-repair")
+    print(f"manifest={manifest_path}")
+    with manifest:
+        for source, target, method in actions:
+            record = {
+                "action": "rename",
+                "source": str(source),
+                "target": str(target),
+                "method": method,
+                "dry_run": args.dry_run,
+            }
+            if target.exists():
+                record["error"] = "target exists"
+                summary["skipped"] += 1
+                write_record(manifest, record)
+                continue
+            try:
+                if not args.dry_run:
+                    source.rename(target)
+                summary["renamed"] += 1
+                write_record(manifest, record)
+            except OSError as exc:
+                record["error"] = str(exc)
+                summary["errors"] += 1
+                write_record(manifest, record)
+    print(json.dumps(summary, sort_keys=True))
+    return summary
+
+
+def audit(args: argparse.Namespace) -> dict[str, int]:
+    con = sqlite_ro(args.db)
+    folders = folder_map(con)
+    con.row_factory = sqlite3.Row
+    albums = [
+        dict(row)
+        for row in con.execute(
+            """
+            select id, name, album_artist, folder_ids, embed_art_path, small_image_url, medium_image_url, large_image_url
+            from album
+            where missing = 0
+            """
+        )
+    ]
+    without_embed_or_external = 0
+    with_embed_or_external = 0
+    with_folder_images = 0
+    with_standard_cover = 0
+    without_any_art_source = 0
+    without_embed_or_external_with_folder_images = 0
+    without_embed_or_external_with_standard_cover = 0
+    for album in albums:
+        has_embed_or_external = any(
+            album.get(key)
+            for key in ("embed_art_path", "small_image_url", "medium_image_url", "large_image_url")
+        )
+        has_folder_images = False
+        has_standard_cover = False
+        for folder_id in parse_folder_ids(album.get("folder_ids")):
+            row = folders.get(folder_id)
+            if not row:
+                continue
+            folder = rel_to_actual(args.music_root, folder_rel_path(row))
+            if standard_cover_exists(folder):
+                has_standard_cover = True
+                has_folder_images = True
+            if parse_image_files(row.get("image_files")):
+                has_folder_images = True
+        if has_embed_or_external:
+            with_embed_or_external += 1
+        else:
+            without_embed_or_external += 1
+        if has_folder_images:
+            with_folder_images += 1
+        if has_standard_cover:
+            with_standard_cover += 1
+        if not (has_embed_or_external or has_folder_images or has_standard_cover):
+            without_any_art_source += 1
+        if not has_embed_or_external and has_folder_images:
+            without_embed_or_external_with_folder_images += 1
+        if not has_embed_or_external and has_standard_cover:
+            without_embed_or_external_with_standard_cover += 1
+    filename_actions = collect_filename_renames(args.music_root)
+    tag_count = 0
+    field_count = 0
+    try:
+        import mutagen  # type: ignore
+    except ImportError:
+        mutagen = None  # type: ignore
+    if mutagen is not None:
+        tag_candidates = db_metadata_candidates(args.db)
+        tag_count = len(tag_candidates)
+        field_count = sum(len(fixes) for _path, fixes in tag_candidates)
+    summary = {
+        "albums_total": len(albums),
+        "albums_with_embed_or_external_art": with_embed_or_external,
+        "albums_with_folder_images": with_folder_images,
+        "albums_with_standard_cover_files": with_standard_cover,
+        "albums_without_any_art_source": without_any_art_source,
+        "albums_without_embed_or_external_art": without_embed_or_external,
+        "albums_without_embed_or_external_art_with_folder_images": without_embed_or_external_with_folder_images,
+        "albums_without_embed_or_external_art_with_standard_cover": without_embed_or_external_with_standard_cover,
+        "filename_renames_planned": len(filename_actions),
+        "tag_files_planned": tag_count,
+        "tag_fields_planned": field_count,
+    }
+    print(json.dumps(summary, sort_keys=True))
+    return summary
+
+
+def build_parser() -> argparse.ArgumentParser:
+    home = Path.home()
+    default_music_root = Path(os.environ.get("NAVIDROME_REPAIR_MUSIC_ROOT", "/mnt/media_rw/<usb-volume-id>/Music"))
+    parser = argparse.ArgumentParser(description="Repair Note 20 Navidrome library metadata and cover art")
+    parser.add_argument("--music-root", type=Path, default=default_music_root)
+    parser.add_argument("--view-root", type=Path, default=home / "media/navidrome-music-view")
+    parser.add_argument("--db", type=Path, default=home / ".local/share/navidrome/navidrome.db")
+    parser.add_argument("--work-dir", type=Path, default=home / "media-maintenance/navidrome-library-repair")
+    parser.add_argument("--apply", action="store_true", help="make changes; default is dry-run")
+    parser.add_argument("--itunes-countries", default="DE,US,RU,GB")
+    parser.add_argument("--online-delay", type=float, default=0.25)
+    parser.add_argument("--musicbrainz-delay", type=float, default=1.2)
+    parser.add_argument("--online-sources", default="musicbrainz,deezer,itunes")
+    parser.add_argument("--min-folder-confidence", type=float, default=0.72)
+    parser.add_argument("--max-online", type=int, default=0, help="max online covers to download; 0 means no limit")
+    parser.add_argument("--max-albums", type=int, default=0, help="max missing-art albums to examine online; 0 means no limit")
+    parser.add_argument("--progress-every", type=int, default=25)
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("audit")
+    sub.add_parser("local-covers")
+    sub.add_parser("online-covers")
+    sub.add_parser("folder-online-covers")
+    sub.add_parser("repair-tags")
+    sub.add_parser("repair-filenames")
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    args.dry_run = not args.apply
+    if args.command == "audit":
+        audit(args)
+    elif args.command == "local-covers":
+        apply_local_covers(args)
+    elif args.command == "online-covers":
+        fetch_online_covers(args)
+    elif args.command == "folder-online-covers":
+        fetch_folder_online_covers(args)
+    elif args.command == "repair-tags":
+        repair_tags(args)
+    elif args.command == "repair-filenames":
+        repair_filenames(args)
+    else:
+        parser.error(f"unknown command {args.command}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

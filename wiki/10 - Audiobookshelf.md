@@ -128,6 +128,21 @@ extracts metadata, writes its SQLite state, and may involve FFmpeg/ffprobe work.
 On this phone, that can consume enough CPU and I/O to make the whole media box
 feel worse while the scan is running.
 
+This guide carries a local patch for Audiobookshelf `v2.35.1` that makes two
+scanner hotspots tunable: concurrent audio probes and concurrent file metadata
+work inside one library item. The service template sets conservative Android
+defaults:
+
+```sh
+ABS_SCAN_AUDIO_PROBE_CONCURRENCY=2
+ABS_SCAN_AUDIO_PROBE_BATCH_DELAY_MS=50
+ABS_SCAN_LIBRARY_FILE_CONCURRENCY=8
+ABS_SCAN_LIBRARY_FILE_BATCH_DELAY_MS=25
+```
+
+These limits reduce burst pressure from large multi-file books. They do not
+make scans free, and they do not replace the watchdog.
+
 The validation result was mixed:
 
 | Check | Result |
@@ -144,6 +159,7 @@ The practical setup is:
 
 - keep the file watcher disabled
 - keep automatic scan cron disabled
+- keep the scanner throttle variables enabled
 - run manual scans only when the phone is otherwise quiet
 - avoid scanning while Jellyfin is transcoding or generating images
 - watch the dashboard and supervisor state during the scan

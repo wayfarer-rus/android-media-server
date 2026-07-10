@@ -7,6 +7,7 @@ export PATH="$HOME/bin:$PREFIX/bin:$PATH"
 
 USB_READY="${USB_READY:-$HOME/bin/usb-media-ready}"
 CONFIG="${CONFIG:-$HOME/.config/navidrome/navidrome.toml}"
+ENV_FILE="${ENV_FILE:-$HOME/.config/navidrome/navidrome.env}"
 
 fail_retry() {
   printf '%s navidrome: preflight_failed reason=%s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$1"
@@ -17,6 +18,7 @@ fail_retry() {
 [ -x "$PREFIX/bin/navidrome" ] || fail_retry "navidrome_binary_missing"
 [ -r "$CONFIG" ] || fail_retry "config_missing"
 "$USB_READY" --quiet || fail_retry "usb_not_ready"
+[ -r "$ENV_FILE" ] && . "$ENV_FILE"
 
 mkdir -p "$HOME/.local/share/navidrome" "$HOME/.cache/navidrome" \
   "$HOME/.local/state/navidrome"

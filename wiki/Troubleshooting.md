@@ -446,6 +446,22 @@ First check whether the phone is already busy:
 ps -A -o pid,ppid,%cpu,%mem,rss,args | grep -E 'audiobookshelf|node|ffmpeg|ffprobe|jellyfin|navidrome|smbd' | grep -v grep
 ```
 
+Confirm the patched service is using scanner limits:
+
+```sh
+pid="$(pgrep -f 'node index.js --host .*--port 13378' | head -1)"
+tr '\0' '\n' < "/proc/$pid/environ" | grep '^ABS_SCAN_'
+```
+
+Expected shape:
+
+```text
+ABS_SCAN_AUDIO_PROBE_CONCURRENCY=2
+ABS_SCAN_AUDIO_PROBE_BATCH_DELAY_MS=50
+ABS_SCAN_LIBRARY_FILE_CONCURRENCY=8
+ABS_SCAN_LIBRARY_FILE_BATCH_DELAY_MS=25
+```
+
 For the first library pass:
 
 - disable Audiobookshelf's watcher
@@ -454,6 +470,10 @@ For the first library pass:
 - keep Podcasts out until books are stable
 - run scans when Jellyfin is idle
 - keep the phone charging and cool
+
+If scans are still too aggressive, lower `ABS_SCAN_AUDIO_PROBE_CONCURRENCY` to
+`1` first. That slows indexing, but it is the most direct way to reduce
+subprocess and USB I/O bursts.
 
 If the scan makes other services unreliable, stop Audiobookshelf and let the
 server settle:

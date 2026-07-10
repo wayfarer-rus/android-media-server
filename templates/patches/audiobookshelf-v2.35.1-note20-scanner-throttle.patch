@@ -1,0 +1,273 @@
+diff --git a/server/scanner/AudioFileScanner.js b/server/scanner/AudioFileScanner.js
+index 2ba4230d..2f935218 100644
+--- a/server/scanner/AudioFileScanner.js
++++ b/server/scanner/AudioFileScanner.js
+@@ -1,6 +1,7 @@
+ const Path = require('path')
+ const Logger = require('../Logger')
+ const prober = require('../utils/prober')
++const scannerTuning = require('../utils/scannerTuning')
+ const { LogLevel } = require('../utils/constants')
+ const { parseOverdriveMediaMarkersAsChapters } = require('../utils/parsers/parseOverdriveMediaMarkers')
+ const parseNameString = require('../utils/parsers/parseNameString')
+@@ -187,17 +188,14 @@ class AudioFileScanner {
+    * @returns {Promise<AudioFile[]>}
+    */
+   async executeMediaFileScans(mediaType, libraryItemScanData, audioLibraryFiles) {
+-    const batchSize = 32
+-    const results = []
+-    for (let batch = 0; batch < audioLibraryFiles.length; batch += batchSize) {
+-      const proms = []
+-      for (let i = batch; i < Math.min(batch + batchSize, audioLibraryFiles.length); i++) {
+-        proms.push(this.scan(mediaType, audioLibraryFiles[i], libraryItemScanData.mediaMetadata))
+-      }
+-      results.push(...(await Promise.all(proms).then((scanResults) => scanResults.filter((sr) => sr))))
+-    }
+-
+-    return results
++    const results = await scannerTuning.mapInBatches(
++      audioLibraryFiles,
++      scannerTuning.getAudioProbeConcurrency(),
++      (audioLibraryFile) => this.scan(mediaType, audioLibraryFile, libraryItemScanData.mediaMetadata),
++      scannerTuning.getAudioProbeBatchDelayMs()
++    )
++
++    return results.filter((scanResult) => scanResult)
+   }
+ 
+   /**
+diff --git a/server/utils/scandir.js b/server/utils/scandir.js
+index 6dd2d67f..e1b595e0 100644
+--- a/server/utils/scandir.js
++++ b/server/utils/scandir.js
+@@ -1,6 +1,7 @@
+ const Path = require('path')
+ const { filePathToPOSIX } = require('./fileUtils')
+ const globals = require('./globals')
++const scannerTuning = require('./scannerTuning')
+ const LibraryFile = require('../objects/files/LibraryFile')
+ const parseNameString = require('./parsers/parseNameString')
+ 
+@@ -128,13 +129,16 @@ module.exports.groupFileItemsIntoLibraryItemDirs = groupFileItemsIntoLibraryItem
+  * @returns {import('../objects/files/LibraryFile')}
+  */
+ function buildLibraryFile(libraryItemPath, files) {
+-  return Promise.all(
+-    files.map(async (file) => {
++  return scannerTuning.mapInBatches(
++    files,
++    scannerTuning.getLibraryFileConcurrency(),
++    async (file) => {
+       const filePath = Path.posix.join(libraryItemPath, file)
+       const newLibraryFile = new LibraryFile()
+       await newLibraryFile.setDataFromPath(filePath, file)
+       return newLibraryFile
+-    })
++    },
++    scannerTuning.getLibraryFileBatchDelayMs()
+   )
+ }
+ module.exports.buildLibraryFile = buildLibraryFile
+diff --git a/server/utils/scannerTuning.js b/server/utils/scannerTuning.js
+new file mode 100644
+index 00000000..aa880021
+--- /dev/null
++++ b/server/utils/scannerTuning.js
+@@ -0,0 +1,56 @@
++function parseIntegerEnv(name, defaultValue, minValue = 0, maxValue = Number.MAX_SAFE_INTEGER) {
++  const raw = process.env[name]
++  if (raw === undefined || raw === '') return defaultValue
++
++  const value = Number(raw)
++  if (!Number.isInteger(value) || value < minValue || value > maxValue) return defaultValue
++  return value
++}
++
++function getAudioProbeConcurrency() {
++  return parseIntegerEnv('ABS_SCAN_AUDIO_PROBE_CONCURRENCY', 32, 1, 1024)
++}
++
++function getAudioProbeBatchDelayMs() {
++  return parseIntegerEnv('ABS_SCAN_AUDIO_PROBE_BATCH_DELAY_MS', 0, 0, 60000)
++}
++
++function getLibraryFileConcurrency() {
++  return parseIntegerEnv('ABS_SCAN_LIBRARY_FILE_CONCURRENCY', 0, 0, 1024)
++}
++
++function getLibraryFileBatchDelayMs() {
++  return parseIntegerEnv('ABS_SCAN_LIBRARY_FILE_BATCH_DELAY_MS', 0, 0, 60000)
++}
++
++function delay(ms) {
++  return new Promise((resolve) => setTimeout(resolve, ms))
++}
++
++async function mapInBatches(items, batchSize, mapper, batchDelayMs = 0) {
++  if (!items.length) return []
++
++  if (!batchSize || batchSize >= items.length) {
++    return Promise.all(items.map(mapper))
++  }
++
++  const results = []
++  for (let start = 0; start < items.length; start += batchSize) {
++    const batch = items.slice(start, start + batchSize)
++    results.push(...(await Promise.all(batch.map(mapper))))
++
++    if (batchDelayMs && start + batchSize < items.length) {
++      await delay(batchDelayMs)
++    }
++  }
++  return results
++}
++
++module.exports = {
++  parseIntegerEnv,
++  getAudioProbeConcurrency,
++  getAudioProbeBatchDelayMs,
++  getLibraryFileConcurrency,
++  getLibraryFileBatchDelayMs,
++  mapInBatches
++}
+diff --git a/test/server/scanner/AudioFileScanner.test.js b/test/server/scanner/AudioFileScanner.test.js
+new file mode 100644
+index 00000000..34e17fb9
+--- /dev/null
++++ b/test/server/scanner/AudioFileScanner.test.js
+@@ -0,0 +1,46 @@
++const { expect } = require('chai')
++const sinon = require('sinon')
++const AudioFileScanner = require('../../../server/scanner/AudioFileScanner')
++
++describe('AudioFileScanner', () => {
++  afterEach(() => {
++    sinon.restore()
++    delete process.env.ABS_SCAN_AUDIO_PROBE_CONCURRENCY
++    delete process.env.ABS_SCAN_AUDIO_PROBE_BATCH_DELAY_MS
++  })
++
++  describe('executeMediaFileScans', () => {
++    it('limits concurrent audio probes from environment', async () => {
++      process.env.ABS_SCAN_AUDIO_PROBE_CONCURRENCY = '2'
++
++      let active = 0
++      let maxActive = 0
++      sinon.stub(AudioFileScanner, 'scan').callsFake(async (mediaType, libraryFile) => {
++        active++
++        maxActive = Math.max(maxActive, active)
++        await new Promise((resolve) => setTimeout(resolve, 5))
++        active--
++        return { id: libraryFile.id }
++      })
++
++      const files = Array.from({ length: 5 }, (_, id) => ({ id, metadata: { path: `/tmp/${id}.mp3` } }))
++      const results = await AudioFileScanner.executeMediaFileScans('book', { mediaMetadata: {} }, files)
++
++      expect(maxActive).to.equal(2)
++      expect(results.map((result) => result.id)).to.deep.equal([0, 1, 2, 3, 4])
++    })
++
++    it('keeps filtering failed scans', async () => {
++      process.env.ABS_SCAN_AUDIO_PROBE_CONCURRENCY = '1'
++
++      sinon.stub(AudioFileScanner, 'scan').callsFake(async (mediaType, libraryFile) => {
++        return libraryFile.id === 1 ? null : { id: libraryFile.id }
++      })
++
++      const files = Array.from({ length: 3 }, (_, id) => ({ id, metadata: { path: `/tmp/${id}.mp3` } }))
++      const results = await AudioFileScanner.executeMediaFileScans('book', { mediaMetadata: {} }, files)
++
++      expect(results.map((result) => result.id)).to.deep.equal([0, 2])
++    })
++  })
++})
+diff --git a/test/server/utils/scandirConcurrency.test.js b/test/server/utils/scandirConcurrency.test.js
+new file mode 100644
+index 00000000..f7c66daf
+--- /dev/null
++++ b/test/server/utils/scandirConcurrency.test.js
+@@ -0,0 +1,32 @@
++const { expect } = require('chai')
++const sinon = require('sinon')
++const LibraryFile = require('../../../server/objects/files/LibraryFile')
++const scanUtils = require('../../../server/utils/scandir')
++
++describe('scandir buildLibraryFile concurrency', () => {
++  afterEach(() => {
++    sinon.restore()
++    delete process.env.ABS_SCAN_LIBRARY_FILE_CONCURRENCY
++    delete process.env.ABS_SCAN_LIBRARY_FILE_BATCH_DELAY_MS
++  })
++
++  it('limits concurrent LibraryFile stat work from environment', async () => {
++    process.env.ABS_SCAN_LIBRARY_FILE_CONCURRENCY = '2'
++
++    let active = 0
++    let maxActive = 0
++    sinon.stub(LibraryFile.prototype, 'setDataFromPath').callsFake(async function (filePath, relPath) {
++      active++
++      maxActive = Math.max(maxActive, active)
++      await new Promise((resolve) => setTimeout(resolve, 5))
++      active--
++      this.ino = relPath
++      this.metadata = { path: filePath, relPath }
++    })
++
++    const results = await scanUtils.buildLibraryFile('/library/book', ['1.mp3', '2.mp3', '3.mp3', '4.mp3', '5.mp3'])
++
++    expect(maxActive).to.equal(2)
++    expect(results.map((file) => file.ino)).to.deep.equal(['1.mp3', '2.mp3', '3.mp3', '4.mp3', '5.mp3'])
++  })
++})
+diff --git a/test/server/utils/scannerTuning.test.js b/test/server/utils/scannerTuning.test.js
+new file mode 100644
+index 00000000..874bd1ec
+--- /dev/null
++++ b/test/server/utils/scannerTuning.test.js
+@@ -0,0 +1,45 @@
++const { expect } = require('chai')
++const scannerTuning = require('../../../server/utils/scannerTuning')
++
++describe('scannerTuning', () => {
++  afterEach(() => {
++    delete process.env.TEST_SCANNER_LIMIT
++  })
++
++  describe('parseIntegerEnv', () => {
++    it('returns the default for unset or invalid values', () => {
++      expect(scannerTuning.parseIntegerEnv('TEST_SCANNER_LIMIT', 7, 1, 32)).to.equal(7)
++
++      process.env.TEST_SCANNER_LIMIT = 'not-a-number'
++      expect(scannerTuning.parseIntegerEnv('TEST_SCANNER_LIMIT', 7, 1, 32)).to.equal(7)
++
++      process.env.TEST_SCANNER_LIMIT = '0'
++      expect(scannerTuning.parseIntegerEnv('TEST_SCANNER_LIMIT', 7, 1, 32)).to.equal(7)
++
++      process.env.TEST_SCANNER_LIMIT = '33'
++      expect(scannerTuning.parseIntegerEnv('TEST_SCANNER_LIMIT', 7, 1, 32)).to.equal(7)
++    })
++
++    it('returns integer values inside range', () => {
++      process.env.TEST_SCANNER_LIMIT = '2'
++      expect(scannerTuning.parseIntegerEnv('TEST_SCANNER_LIMIT', 7, 1, 32)).to.equal(2)
++    })
++  })
++
++  describe('mapInBatches', () => {
++    it('limits mapper concurrency and preserves result order', async () => {
++      let active = 0
++      let maxActive = 0
++      const results = await scannerTuning.mapInBatches([0, 1, 2, 3, 4], 2, async (item) => {
++        active++
++        maxActive = Math.max(maxActive, active)
++        await new Promise((resolve) => setTimeout(resolve, 5))
++        active--
++        return item * 10
++      })
++
++      expect(maxActive).to.equal(2)
++      expect(results).to.deep.equal([0, 10, 20, 30, 40])
++    })
++  })
++})

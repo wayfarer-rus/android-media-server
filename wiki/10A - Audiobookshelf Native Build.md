@@ -137,6 +137,30 @@ The tested revision was:
 aacdcc47
 ```
 
+## Apply Note 20 Scanner Patch
+
+The Note 20 service uses a small local patch against Audiobookshelf `v2.35.1`.
+It keeps upstream defaults when unset, but lets the runit service cap scanner
+fanout with environment variables. Apply it before dependency installation:
+
+```sh
+cd "$WS/audiobookshelf"
+git apply "$HOME/android-media-server/templates/patches/audiobookshelf-v2.35.1-note20-scanner-throttle.patch"
+```
+
+The patch adds:
+
+| Variable | Service default | Purpose |
+|---|---:|---|
+| `ABS_SCAN_AUDIO_PROBE_CONCURRENCY` | `2` | maximum concurrent audio `ffprobe` jobs |
+| `ABS_SCAN_AUDIO_PROBE_BATCH_DELAY_MS` | `50` | pause between probe batches |
+| `ABS_SCAN_LIBRARY_FILE_CONCURRENCY` | `8` | maximum concurrent file metadata/stat jobs inside one item |
+| `ABS_SCAN_LIBRARY_FILE_BATCH_DELAY_MS` | `25` | pause between file metadata/stat batches |
+
+If you build a different Audiobookshelf version, do not apply this patch
+blindly. Inspect the scanner source first and carry the same idea forward only
+if the changed functions still match.
+
 ## Install Server Dependencies
 
 Install root dependencies with package scripts disabled:
@@ -493,6 +517,9 @@ Set at least:
 AUDIOBOOKS="/mnt/media_rw/<usb-volume-id>/Audiobooks"
 HOST_ADDR="192.168.1.50"
 ```
+
+Keep the scanner throttle variables from the template unless you are deliberately
+tuning scan speed versus service stability.
 
 Then start it:
 

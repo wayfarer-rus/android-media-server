@@ -90,8 +90,10 @@ Native Node builds on Android can be fragile.
 The scanner is the main runtime risk. It can make the phone feel overloaded and
 can degrade the other services while it walks and probes the audiobook library.
 
-Get the rest of the server stable first, then add Audiobookshelf. Keep watcher
-and automatic scans disabled, and run manual scans only when the phone is quiet.
+The guide applies a local scanner-throttling patch for the tested
+Audiobookshelf release, but scans are still maintenance work. Get the rest of
+the server stable first, then add Audiobookshelf. Keep watcher and automatic
+scans disabled, and run manual scans only when the phone is quiet.
 
 ## GitHub Wiki Search
 

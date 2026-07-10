@@ -5,6 +5,15 @@ Address = "192.168.1.50"
 Port = "4533"
 MusicFolder = "/mnt/media_rw/<usb-volume-id>/Music"
 DataFolder = "/data/data/com.termux/files/home/.local/share/navidrome"
+CacheFolder = "/data/data/com.termux/files/home/.cache/navidrome"
+LogFile = "/data/data/com.termux/files/home/.local/state/navidrome/navidrome.log"
 
-ScanSchedule = "1h"
+ScanInterval = "24h"
 EnableSharing = false
+
+# Album art: prefer local folder images and embedded artwork, then external
+# metadata agents. Last.fm album art requires API credentials supplied outside
+# this file, for example through $HOME/.config/navidrome/navidrome.env.
+CoverArtPriority = "cover.*, folder.*, front.*, embedded, external"
+ArtistArtPriority = "artist.*, album/artist.*, external"
+Agents = "deezer,lastfm,listenbrainz"
